@@ -17,7 +17,7 @@ final class OrgEditingTests: XCTestCase {
         let result = OrgEditing.insertNode(into: baseOrg(), defaultRunner: "echo_fixture")
         XCTAssertEqual(result.nodeId, "node_3")
         XCTAssertTrue(result.org.nodes.contains(where: { $0.id == "node_3" }))
-        XCTAssertEqual(result.position.x, 120 + 3 * 24)
+        XCTAssertEqual(result.position.x, 120 + 3 * 36)
     }
 
     func testRemoveNodeCascadesEdgesAndResetsEntry() {

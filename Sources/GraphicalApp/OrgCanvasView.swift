@@ -108,8 +108,9 @@ final class OrgCanvasView: NSView {
             return
         }
         var contentBounds = CGRect.null
-        for (_, pos) in layout.nodes {
-            contentBounds = contentBounds.union(nodeRect(pos))
+        for node in org.nodes {
+            guard let pos = layout.nodes[node.id] else { continue }
+            contentBounds = contentBounds.union(nodeRect(node, pos: pos))
         }
         let padding: CGFloat = 48
         contentBounds = contentBounds.insetBy(dx: -padding, dy: -padding)
@@ -133,8 +134,9 @@ final class OrgCanvasView: NSView {
     }
 
     func centerOn(nodeId: String) {
-        guard let pos = layout.nodes[nodeId] else { return }
-        let rect = nodeRect(pos)
+        guard let pos = layout.nodes[nodeId],
+              let node = org.node(id: nodeId) else { return }
+        let rect = nodeRect(node, pos: pos)
         let center = CGPoint(x: rect.midX, y: rect.midY)
         offset = CGPoint(
             x: bounds.width / 2 - center.x * scale,
@@ -178,8 +180,10 @@ final class OrgCanvasView: NSView {
             drawNode(node)
         }
 
-        if let from = connectFromId, let pos = layout.nodes[from] {
-            let start = nodeCenter(pos)
+        if let from = connectFromId,
+           let pos = layout.nodes[from],
+           let node = org.node(id: from) {
+            let start = nodeCenter(node, pos: pos)
             let mouse = convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)
             let end = viewToCanvas(mouse)
             Theme.accent.withAlphaComponent(0.5).setStroke()
@@ -214,10 +218,181 @@ final class OrgCanvasView: NSView {
         }
     }
 
+    private struct NodeMetrics {
+        let size: CGSize
+        let isEntry: Bool
+        let startRow: CGRect?
+        let roleRect: CGRect
+        let metaRect: CGRect
+        let chipRect: CGRect
+        let badgeRect: CGRect?
+        let entryBarRect: CGRect?
+    }
+
+    private func isEntryNode(_ node: OrgNode) -> Bool {
+        org.entry == node.id || (org.entry == nil && org.nodes.first?.id == node.id)
+    }
+
+    private func nodeMetrics(for node: OrgNode) -> NodeMetrics {
+        let isEntry = isEntryNode(node)
+        let isActiveRun = activeRunNodeId == node.id
+
+        let roleFont = Theme.bodyFont(ofSize: Theme.nodeRoleFontSize, weight: .semibold)
+        let metaFont = Theme.monoFont(ofSize: Theme.nodeMetaFontSize)
+        let chipFont = Theme.bodyFont(ofSize: Theme.nodeChipFontSize, weight: .medium)
+        let badgeFont = Theme.bodyFont(ofSize: Theme.nodeBadgeFontSize, weight: .semibold)
+        let startFont = Theme.bodyFont(ofSize: Theme.nodeStartFontSize, weight: .bold)
+
+        let roleLineHeight = ceil(roleFont.ascender - roleFont.descender + 2)
+        let metaLineHeight = ceil(metaFont.ascender - metaFont.descender + 2)
+        let startRowHeight = ceil(startFont.ascender - startFont.descender + 2)
+
+        let chipText = node.model ?? "—"
+        let chipTextSize = (chipText as NSString).size(withAttributes: [.font: chipFont])
+        let chipSize = CGSize(
+            width: chipTextSize.width + Theme.nodeChipPaddingH * 2,
+            height: chipTextSize.height + Theme.nodeChipPaddingV * 2
+        )
+
+        var badgeSize = CGSize.zero
+        if isActiveRun {
+            let badgeLabel = runPaused ? "Paused" : "Working"
+            let textSize = (badgeLabel as NSString).size(withAttributes: [.font: badgeFont])
+            badgeSize = CGSize(
+                width: textSize.width + Theme.nodeBadgePaddingH * 2,
+                height: textSize.height + Theme.nodeBadgePaddingV * 2
+            )
+        }
+
+        let metaText = "\(node.id) · \(node.runner)"
+        let innerMaxWidth = Theme.nodeMaxWidth - Theme.nodeContentInsetLeft - Theme.nodePaddingH
+
+        let metaWidth = min(
+            innerMaxWidth,
+            (metaText as NSString).size(withAttributes: [.font: metaFont]).width
+        )
+        let roleNaturalWidth = (node.role as NSString).size(withAttributes: [.font: roleFont]).width
+        let roleWidthWithBadge = innerMaxWidth - (badgeSize.width > 0 ? badgeSize.width + Theme.spacingXS : 0)
+        let roleWidth = min(roleWidthWithBadge, roleNaturalWidth)
+
+        let width = max(
+            Theme.nodeMinWidth,
+            min(
+                Theme.nodeMaxWidth,
+                max(roleWidth, metaWidth, chipSize.width) + Theme.nodeContentInsetLeft + Theme.nodePaddingH
+            )
+        )
+
+        let contentRight = width - Theme.nodePaddingH
+        let contentLeft = Theme.nodeContentInsetLeft
+
+        var y = Theme.nodePaddingV
+        let roleRowY = isEntry ? y + startRowHeight + Theme.nodeRowSpacing : y
+        var startRow: CGRect?
+        if isEntry {
+            let startWidth = badgeSize.width > 0
+                ? max(0, contentRight - badgeSize.width - Theme.spacingXS - contentLeft)
+                : contentRight - contentLeft
+            startRow = CGRect(
+                x: contentLeft,
+                y: y,
+                width: startWidth,
+                height: startRowHeight
+            )
+            y = roleRowY
+        }
+
+        let badgeRect: CGRect?
+        if badgeSize.width > 0 {
+            badgeRect = CGRect(
+                x: contentRight - badgeSize.width,
+                y: roleRowY,
+                width: badgeSize.width,
+                height: badgeSize.height
+            )
+        } else {
+            badgeRect = nil
+        }
+
+        let roleWidthAvailable: CGFloat
+        if let badge = badgeRect {
+            roleWidthAvailable = max(0, badge.minX - contentLeft - Theme.spacingXS)
+        } else {
+            roleWidthAvailable = contentRight - contentLeft
+        }
+        let roleRect = CGRect(
+            x: contentLeft,
+            y: y,
+            width: roleWidthAvailable,
+            height: roleLineHeight
+        )
+        y += roleLineHeight + Theme.nodeRowSpacing
+
+        let metaRect = CGRect(
+            x: contentLeft,
+            y: y,
+            width: contentRight - contentLeft,
+            height: metaLineHeight
+        )
+        y += metaLineHeight + Theme.nodeRowSpacing
+
+        let chipRect = CGRect(
+            x: contentLeft,
+            y: y,
+            width: min(chipSize.width, contentRight - contentLeft),
+            height: chipSize.height
+        )
+        y += chipSize.height
+
+        y += Theme.nodePaddingV
+        let height = max(Theme.nodeMinHeight, y)
+
+        let entryBarRect: CGRect? = isEntry
+            ? CGRect(
+                x: 0,
+                y: Theme.nodePaddingV,
+                width: Theme.nodeEntryBarWidth,
+                height: height - Theme.nodePaddingV * 2
+            )
+            : nil
+
+        return NodeMetrics(
+            size: CGSize(width: width, height: height),
+            isEntry: isEntry,
+            startRow: startRow,
+            roleRect: roleRect,
+            metaRect: metaRect,
+            chipRect: chipRect,
+            badgeRect: badgeRect,
+            entryBarRect: entryBarRect
+        )
+    }
+
+    private func nodeSize(for node: OrgNode) -> CGSize {
+        nodeMetrics(for: node).size
+    }
+
+    private func drawTruncatedText(
+        _ text: String,
+        in rect: NSRect,
+        attributes: [NSAttributedString.Key: Any]
+    ) {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        style.alignment = .left
+        var attrs = attributes
+        attrs[.paragraphStyle] = style
+        let str = NSAttributedString(string: text, attributes: attrs)
+        str.draw(
+            with: rect,
+            options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine]
+        )
+    }
+
     private func drawNode(_ node: OrgNode) {
         guard let pos = layout.nodes[node.id] else { return }
-        let rect = nodeRect(pos)
-        let isEntry = org.entry == node.id || (org.entry == nil && org.nodes.first?.id == node.id)
+        let metrics = nodeMetrics(for: node)
+        let rect = CGRect(origin: CGPoint(x: pos.x, y: pos.y), size: metrics.size)
         let selected = selectedNodeId == node.id
         let isActiveRun = activeRunNodeId == node.id
 
@@ -251,106 +426,112 @@ final class OrgCanvasView: NSView {
         }
         path.stroke()
 
-        if isEntry {
-            let bar = NSRect(x: rect.minX, y: rect.minY + 8, width: 5, height: rect.height - 16)
-            let barPath = NSBezierPath(roundedRect: bar, xRadius: 2.5, yRadius: 2.5)
+        if let bar = metrics.entryBarRect {
+            let barPath = NSBezierPath(
+                roundedRect: bar.offsetBy(dx: rect.minX, dy: rect.minY),
+                xRadius: 2.5,
+                yRadius: 2.5
+            )
             Theme.accent.setFill()
             barPath.fill()
+        }
 
-            let flag = "START" as NSString
-            flag.draw(
-                in: NSRect(x: rect.minX + 12, y: rect.minY + 4, width: 40, height: 10),
-                withAttributes: [
-                    .font: Theme.bodyFont(ofSize: 8, weight: .bold),
+        if let startRow = metrics.startRow {
+            drawTruncatedText(
+                "START",
+                in: startRow.offsetBy(dx: rect.minX, dy: rect.minY),
+                attributes: [
+                    .font: Theme.bodyFont(ofSize: Theme.nodeStartFontSize, weight: .bold),
                     .foregroundColor: Theme.accent
                 ]
             )
         }
 
-        let role = node.role as NSString
-        role.draw(
-            in: NSRect(x: rect.minX + 14, y: rect.minY + 12, width: rect.width - 28, height: 18),
-            withAttributes: [
-                .font: Theme.bodyFont(ofSize: 13, weight: .semibold),
+        drawTruncatedText(
+            node.role,
+            in: metrics.roleRect.offsetBy(dx: rect.minX, dy: rect.minY),
+            attributes: [
+                .font: Theme.bodyFont(ofSize: Theme.nodeRoleFontSize, weight: .semibold),
                 .foregroundColor: Theme.text
             ]
         )
 
-        let meta = "\(node.id) · \(node.runner)" as NSString
-        meta.draw(
-            in: NSRect(x: rect.minX + 14, y: rect.minY + 34, width: rect.width - 28, height: 16),
-            withAttributes: [
-                .font: Theme.bodyFont(ofSize: 11),
+        drawTruncatedText(
+            "\(node.id) · \(node.runner)",
+            in: metrics.metaRect.offsetBy(dx: rect.minX, dy: rect.minY),
+            attributes: [
+                .font: Theme.monoFont(ofSize: Theme.nodeMetaFontSize),
                 .foregroundColor: Theme.muted
             ]
         )
 
-        let chip = "\(node.model ?? "—")" as NSString
-        let chipSize = chip.size(withAttributes: [.font: Theme.bodyFont(ofSize: 10, weight: .medium)])
-        let chipRect = NSRect(
-            x: rect.maxX - chipSize.width - 22,
-            y: rect.minY + 12,
-            width: chipSize.width + 10,
-            height: 16
+        let chipRect = metrics.chipRect
+        let absoluteChip = chipRect.offsetBy(dx: rect.minX, dy: rect.minY)
+        let chipPath = NSBezierPath(
+            roundedRect: absoluteChip,
+            xRadius: Theme.nodeChipCornerRadius,
+            yRadius: Theme.nodeChipCornerRadius
         )
-        let chipPath = NSBezierPath(roundedRect: chipRect, xRadius: 4, yRadius: 4)
         Theme.accentSoft.setFill()
         chipPath.fill()
-        chip.draw(
-            in: NSRect(x: chipRect.minX + 5, y: chipRect.minY + 1, width: chipSize.width, height: 14),
-            withAttributes: [
-                .font: Theme.bodyFont(ofSize: 10, weight: .medium),
+        drawTruncatedText(
+            node.model ?? "—",
+            in: NSRect(
+                x: absoluteChip.minX + Theme.nodeChipPaddingH,
+                y: absoluteChip.minY + Theme.nodeChipPaddingV,
+                width: absoluteChip.width - Theme.nodeChipPaddingH * 2,
+                height: absoluteChip.height - Theme.nodeChipPaddingV * 2
+            ),
+            attributes: [
+                .font: Theme.bodyFont(ofSize: Theme.nodeChipFontSize, weight: .medium),
                 .foregroundColor: Theme.accent
             ]
         )
 
-        if isActiveRun {
+        if let badgeRect = metrics.badgeRect {
+            let absoluteBadge = badgeRect.offsetBy(dx: rect.minX, dy: rect.minY)
             let label = runPaused ? "Paused" : "Working"
-            let font = Theme.bodyFont(ofSize: 9, weight: .semibold)
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: font,
-                .foregroundColor: Theme.accent
-            ]
-            let text = label as NSString
-            let textSize = text.size(withAttributes: attrs)
-            let padH: CGFloat = 5
-            let padV: CGFloat = 2
-            let badgeW = textSize.width + padH * 2
-            let badgeH = textSize.height + padV * 2
-            let badgeRect = NSRect(
-                x: rect.maxX - badgeW - 8,
-                y: rect.minY + 8,
-                width: badgeW,
-                height: badgeH
+            let font = Theme.bodyFont(ofSize: Theme.nodeBadgeFontSize, weight: .semibold)
+            let badgePath = NSBezierPath(
+                roundedRect: absoluteBadge,
+                xRadius: Theme.nodeBadgeCornerRadius,
+                yRadius: Theme.nodeBadgeCornerRadius
             )
-            let badgePath = NSBezierPath(roundedRect: badgeRect, xRadius: 4, yRadius: 4)
             Theme.accentSoft.setFill()
             badgePath.fill()
-            text.draw(
+            drawTruncatedText(
+                label,
                 in: NSRect(
-                    x: badgeRect.minX + padH,
-                    y: badgeRect.minY + padV,
-                    width: textSize.width,
-                    height: textSize.height
+                    x: absoluteBadge.minX + Theme.nodeBadgePaddingH,
+                    y: absoluteBadge.minY + Theme.nodeBadgePaddingV,
+                    width: absoluteBadge.width - Theme.nodeBadgePaddingH * 2,
+                    height: absoluteBadge.height - Theme.nodeBadgePaddingV * 2
                 ),
-                withAttributes: attrs
+                attributes: [
+                    .font: font,
+                    .foregroundColor: Theme.accent
+                ]
             )
         }
     }
 
     private func drawEdge(_ edge: OrgEdge) {
-        guard let fromPos = layout.nodes[edge.from] else { return }
-        let from = nodeCenter(fromPos)
+        guard let fromNode = org.node(id: edge.from),
+              let fromPos = layout.nodes[edge.from] else { return }
+        let from = nodeCenter(fromNode, pos: fromPos)
         let selected = selectedEdgeId == edge.id
 
         let destinations: [CGPoint]
         switch edge.type {
         case .fixed:
-            guard let toId = edge.to, let toPos = layout.nodes[toId] else { return }
-            destinations = [nodeCenter(toPos)]
+            guard let toId = edge.to,
+                  let toNode = org.node(id: toId),
+                  let toPos = layout.nodes[toId] else { return }
+            destinations = [nodeCenter(toNode, pos: toPos)]
         case .router:
             destinations = edge.targets.compactMap { id in
-                layout.nodes[id].map(nodeCenter)
+                guard let node = org.node(id: id), let pos = layout.nodes[id] else { return nil }
+                return nodeCenter(node, pos: pos)
             }
         }
 
@@ -413,12 +594,14 @@ final class OrgCanvasView: NSView {
 
     // MARK: - Geometry
 
-    private func nodeRect(_ pos: NodePosition) -> CGRect {
-        CGRect(x: pos.x, y: pos.y, width: Theme.nodeSize.width, height: Theme.nodeSize.height)
+    private func nodeRect(_ node: OrgNode, pos: NodePosition) -> CGRect {
+        let size = nodeSize(for: node)
+        return CGRect(x: pos.x, y: pos.y, width: size.width, height: size.height)
     }
 
-    private func nodeCenter(_ pos: NodePosition) -> CGPoint {
-        CGPoint(x: pos.x + Theme.nodeSize.width / 2, y: pos.y + Theme.nodeSize.height / 2)
+    private func nodeCenter(_ node: OrgNode, pos: NodePosition) -> CGPoint {
+        let size = nodeSize(for: node)
+        return CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
     }
 
     private func viewToCanvas(_ point: CGPoint) -> CGPoint {
@@ -427,7 +610,8 @@ final class OrgCanvasView: NSView {
 
     private func hitNode(at canvasPoint: CGPoint) -> String? {
         for node in org.nodes.reversed() {
-            if let pos = layout.nodes[node.id], nodeRect(pos).contains(canvasPoint) {
+            guard let pos = layout.nodes[node.id] else { continue }
+            if nodeRect(node, pos: pos).contains(canvasPoint) {
                 return node.id
             }
         }
@@ -436,15 +620,21 @@ final class OrgCanvasView: NSView {
 
     private func hitEdge(at canvasPoint: CGPoint) -> String? {
         for edge in org.edges {
-            guard let fromPos = layout.nodes[edge.from] else { continue }
-            let from = nodeCenter(fromPos)
+            guard let fromNode = org.node(id: edge.from),
+                  let fromPos = layout.nodes[edge.from] else { continue }
+            let from = nodeCenter(fromNode, pos: fromPos)
             let tos: [CGPoint]
             switch edge.type {
             case .fixed:
-                guard let toId = edge.to, let toPos = layout.nodes[toId] else { continue }
-                tos = [nodeCenter(toPos)]
+                guard let toId = edge.to,
+                      let toNode = org.node(id: toId),
+                      let toPos = layout.nodes[toId] else { continue }
+                tos = [nodeCenter(toNode, pos: toPos)]
             case .router:
-                tos = edge.targets.compactMap { layout.nodes[$0].map(nodeCenter) }
+                tos = edge.targets.compactMap { id in
+                    guard let node = org.node(id: id), let pos = layout.nodes[id] else { return nil }
+                    return nodeCenter(node, pos: pos)
+                }
             }
             for to in tos {
                 if distanceToBezier(point: canvasPoint, from: from, to: to) < 8 {

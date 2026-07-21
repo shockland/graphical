@@ -45,7 +45,7 @@ public enum OrgEditing {
         if next.entry == nil {
             next.entry = id
         }
-        let offset = Double(next.nodes.count) * 24
+        let offset = Double(next.nodes.count) * 36
         return InsertResult(
             org: next,
             nodeId: id,
