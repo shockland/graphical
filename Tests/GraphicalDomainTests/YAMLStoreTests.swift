@@ -17,10 +17,34 @@ final class YAMLStoreTests: XCTestCase {
         XCTAssertEqual(created.org.entry, "entry")
         XCTAssertTrue(created.org.edges.contains { $0.type == .fanOut })
         XCTAssertTrue(created.org.edges.contains { $0.type == .join })
+        XCTAssertTrue(
+            created.org.nodes.allSatisfy { $0.model == nil },
+            "agentic mesh seeds nil-inherit models"
+        )
+        XCTAssertTrue(
+            created.org.edges.contains { $0.id == "auditor-to-implementer" && $0.requiresApproval }
+        )
         XCTAssertNotNil(created.runners.runners["echo_fixture"])
 
         let loaded = try store.load(from: root)
         XCTAssertEqual(loaded, created)
+
+        // Per-planner runner/model survive org.yaml round-trip.
+        var edited = created
+        if let idx = edited.org.nodes.firstIndex(where: { $0.id == "planner-1" }) {
+            edited.org.nodes[idx].runner = "cursor_agent"
+            edited.org.nodes[idx].model = "cursor-grok-4.5-high"
+        }
+        if let idx = edited.org.nodes.firstIndex(where: { $0.id == "planner-2" }) {
+            edited.org.nodes[idx].runner = "claude_code"
+            edited.org.nodes[idx].model = "opus"
+        }
+        try store.save(edited)
+        let reloaded = try store.load(from: root)
+        XCTAssertEqual(reloaded.org.node(id: "planner-1")?.runner, "cursor_agent")
+        XCTAssertEqual(reloaded.org.node(id: "planner-1")?.model, "cursor-grok-4.5-high")
+        XCTAssertEqual(reloaded.org.node(id: "planner-2")?.runner, "claude_code")
+        XCTAssertEqual(reloaded.org.node(id: "planner-2")?.model, "opus")
 
         let yaml = try store.encodeToString(created.org)
         let decoded: OrgGraph = try store.decodeFromString(OrgGraph.self, string: yaml)
@@ -38,6 +62,23 @@ final class YAMLStoreTests: XCTestCase {
         XCTAssertEqual(created.config.meshWidth, 4)
         XCTAssertEqual(created.org.nodes.filter { $0.id.hasPrefix("planner-") }.count, 4)
         XCTAssertEqual(created.org.nodes.filter { $0.id.hasPrefix("interpreter-") }.count, 4)
+    }
+
+    func testParallelFanOutAndMeshWidthRoundTrip() throws {
+        let store = YAMLStore()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graphical-pf-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = try store.createProject(at: root, name: "PF", seed: .agenticMesh, meshWidth: 3)
+        XCTAssertTrue(project.config.parallelFanOut)
+        project.config.parallelFanOut = false
+        project.config.meshWidth = 5
+        try store.save(project)
+        let loaded = try store.load(from: root)
+        XCTAssertFalse(loaded.config.parallelFanOut)
+        XCTAssertEqual(loaded.config.meshWidth, 5)
     }
 
     func testHandoffFilterWithholds() {

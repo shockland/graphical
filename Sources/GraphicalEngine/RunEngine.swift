@@ -101,6 +101,8 @@ public struct RunProgressSnapshot: Sendable {
     public var lastInspection: HandoffInspection?
     public var phase: String?
     public var iteration: Int?
+    /// Nodes currently inside their node loop (parallel fan-out can have several).
+    public var activeNodeIds: [String]
 }
 
 public actor RunEngine {
@@ -138,9 +140,11 @@ public actor RunEngine {
     private var completedNodes: Set<String> = []
     /// Filtered handoffs waiting at a join destination: dest → (from → contract).
     private var joinInbound: [String: [String: HandoffContract]] = [:]
-    /// Sequentially drained ready queue (MVP: one ProcessRunner child at a time).
+    /// Ready queue of lane heads / join destinations.
     private var readyQueue: [ReadyWork] = []
     private var isDrainingReadyQueue = false
+    /// Nodes currently executing their node loop (multiple during parallel fan-out).
+    private var workingNodeIds: Set<String> = []
     private var progressHandler: (@Sendable (RunProgressSnapshot) async -> Void)?
     private var invokeHeartbeatTask: Task<Void, Never>?
     private var invokeStartedAt: Date?
@@ -193,13 +197,15 @@ public actor RunEngine {
             pendingApproval: pendingApproval,
             lastInspection: lastInspection,
             phase: currentPhase,
-            iteration: currentIteration
+            iteration: currentIteration,
+            activeNodeIds: workingNodeIds.sorted()
         )
     }
 
     /// Starts a run. Returns when succeeded, failed, cancelled, or awaiting approval.
     public func start(project: GraphicalProject, goal: String?) async throws -> RunRecord {
         let issues = OrgValidator.validate(org: project.org, runners: project.runners)
+            .filter { !$0.isWarning }
         if !issues.isEmpty {
             throw RunEngineError.invalidOrg(issues.map(\.message))
         }
@@ -219,6 +225,7 @@ public actor RunEngine {
         joinInbound = [:]
         readyQueue = []
         isDrainingReadyQueue = false
+        workingNodeIds = []
         stopInvokeHeartbeat()
         liveLog = []
         currentPhase = "starting"
@@ -306,6 +313,11 @@ public actor RunEngine {
         if run.status == .succeeded || run.status == .failed || run.status == .cancelled {
             return
         }
+        // Drop a pending approval gate so the Run console doesn't keep Approve/Reject
+        // enabled after the user cancels out of an awaiting-approval pause.
+        pendingApproval = nil
+        pausedInbound = nil
+        pausedInbounds = []
         currentPhase = "cancelling"
         await publishProgress()
         run.status = .cancelled
@@ -493,6 +505,9 @@ public actor RunEngine {
             lastInboundByNode[nodeId] = inbound
         }
 
+        workingNodeIds.insert(nodeId)
+        defer { workingNodeIds.remove(nodeId) }
+
         run.activeNodeId = nodeId
         try throwIfCancelled()
         run.status = .running
@@ -654,6 +669,8 @@ public actor RunEngine {
                     routerNext: routerNext,
                     summaryFallback: "Node \(nodeId) failed done-checks"
                 )
+                workingNodeIds.remove(nodeId)
+                await publishProgress()
                 try await handoff(
                     from: node,
                     edge: failEdge,
@@ -691,6 +708,10 @@ public actor RunEngine {
             nodeId: nodeId
         )
         completedNodes.insert(nodeId)
+        // Drop glow before routing so a depth-first lane handoff doesn't keep the
+        // parent lit while its child runs (parallel siblings stay highlighted).
+        workingNodeIds.remove(nodeId)
+        await publishProgress()
 
         let contract = NodeArtifacts.buildContract(
             nodeArtifacts: nodeArtifacts,

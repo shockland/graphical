@@ -14,6 +14,8 @@ final class RunSession {
     private(set) var liveLog: [String] = []
     private(set) var runPhase: String?
     private(set) var runIteration: Int?
+    /// Nodes currently glowing on the Workflow canvas (parallel lanes can be several).
+    private(set) var activeNodeIds: [String] = []
     private(set) var pendingApproval: PendingApproval?
     private(set) var lastInspection: HandoffInspection?
     private(set) var recentRuns: [RunRecord] = []
@@ -38,6 +40,7 @@ final class RunSession {
         run = nil
         events = []
         liveLog = []
+        activeNodeIds = []
         pendingApproval = nil
         lastInspection = nil
         exportPath = nil
@@ -129,6 +132,7 @@ final class RunSession {
         lastInspection = snapshot.lastInspection
         runPhase = snapshot.phase
         runIteration = snapshot.iteration
+        activeNodeIds = snapshot.activeNodeIds
         guard whileRunning else { return nil }
         return runningStatusMessage(from: snapshot, org: org)
     }
@@ -151,6 +155,8 @@ final class RunSession {
         self.lastInspection = await engine.lastInspection
         self.runPhase = await engine.currentPhase
         self.runIteration = await engine.currentIteration
+        let snap = await engine.snapshot()
+        self.activeNodeIds = snap.activeNodeIds
         if let run {
             self.events = (try? await traceStore?.events(runId: run.id)) ?? []
         }
@@ -277,13 +283,18 @@ final class RunSession {
         }
     }
 
-    func cancel(traceStore: TraceStore?) {
-        guard let engine else { return }
+    func cancel(traceStore: TraceStore?, onFinished: (@MainActor () -> Void)? = nil) {
+        guard let engine else {
+            onFinished?()
+            return
+        }
         let session = runSession
         Task {
             try? await engine.cancel()
             guard isCurrentRunSession(session), self.engine === engine else { return }
             await refreshFromEngine(engine, run: await engine.currentRun, traceStore: traceStore)
+            pendingApproval = nil
+            onFinished?()
         }
     }
 

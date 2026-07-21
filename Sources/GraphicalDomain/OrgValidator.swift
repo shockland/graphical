@@ -18,8 +18,28 @@ public enum OrgValidationIssue: Equatable, Sendable, Identifiable {
     case routerFanOutTooLarge(edgeId: String, count: Int, max: Int)
     case unsafeNodeId(String)
     case emptyDoneChecks(nodeId: String)
+    /// Hard-fail: mesh spine edge stripped `.artifacts` and/or `.summary` from `pass`.
+    case meshSpinePassIncomplete(edgeId: String, missing: [HandoffField])
+    /// Soft mesh-shape hints (do not block runs).
+    case meshNoPlanners
+    case meshBrokenLanePairing(plannerId: String, detail: String)
+    case meshMissingAuditorJoin
+    case meshMultiplePostAuditorImplementers([String])
 
     public var id: String { message }
+
+    /// Warnings are advisory; errors block readiness and `RunEngine.start`.
+    public var isWarning: Bool {
+        switch self {
+        case .meshNoPlanners,
+             .meshBrokenLanePairing,
+             .meshMissingAuditorJoin,
+             .meshMultiplePostAuditorImplementers:
+            return true
+        default:
+            return false
+        }
+    }
 
     /// Node to select when the user clicks this issue in the validation banner.
     public var focusNodeId: String? {
@@ -38,6 +58,12 @@ public enum OrgValidationIssue: Equatable, Sendable, Identifiable {
             return id
         case .emptyDoneChecks(let nodeId):
             return nodeId
+        case .meshBrokenLanePairing(let plannerId, _):
+            return plannerId
+        case .meshMultiplePostAuditorImplementers(let ids):
+            return ids.first
+        case .meshMissingAuditorJoin:
+            return "auditor"
         default:
             return nil
         }
@@ -63,6 +89,8 @@ public enum OrgValidationIssue: Equatable, Sendable, Identifiable {
         case .fanOutTooLarge(let edgeId, _, _):
             return edgeId
         case .joinEdgeMissingTo(let edgeId):
+            return edgeId
+        case .meshSpinePassIncomplete(let edgeId, _):
             return edgeId
         default:
             return nil
@@ -105,6 +133,17 @@ public enum OrgValidationIssue: Equatable, Sendable, Identifiable {
             return "Node id '\(id)' contains unsafe characters (allowed: letters, digits, '.', '_', '-')"
         case .emptyDoneChecks(let nodeId):
             return "Node '\(nodeId)' has no done checks (empty allOf/anyOf groups fail closed)"
+        case .meshSpinePassIncomplete(let edgeId, let missing):
+            let fields = missing.map(\.rawValue).joined(separator: ", ")
+            return "Mesh spine edge '\(edgeId)' must pass \(fields) so handoff artifacts travel"
+        case .meshNoPlanners:
+            return "Mesh shape: no Planner-role nodes found"
+        case .meshBrokenLanePairing(let plannerId, let detail):
+            return "Mesh shape: lane pairing broken for '\(plannerId)' (\(detail))"
+        case .meshMissingAuditorJoin:
+            return "Mesh shape: auditor has no inbound join edges from interpreters"
+        case .meshMultiplePostAuditorImplementers(let ids):
+            return "Mesh shape: multiple Implementer-role nodes reachable after auditor (\(ids.joined(separator: ", ")))"
         }
     }
 }
@@ -215,6 +254,177 @@ public enum OrgValidator {
             }
         }
 
+        issues.append(contentsOf: meshSpinePassIssues(org: org))
+        issues.append(contentsOf: meshShapeWarnings(org: org))
         return issues
+    }
+
+    /// Hard-fail when planner→interpreter, interpreter→auditor, or auditor→implementer
+    /// edges strip `.artifacts` / `.summary` from `pass`. Non-mesh orgs are skipped.
+    public static func meshSpinePassIssues(org: OrgGraph) -> [OrgValidationIssue] {
+        guard looksLikeMesh(org) else { return [] }
+        var issues: [OrgValidationIssue] = []
+        for edge in org.edges {
+            guard isMeshSpineEdge(edge, in: org) else { continue }
+            var missing: [HandoffField] = []
+            if !edge.pass.contains(.artifacts) { missing.append(.artifacts) }
+            if !edge.pass.contains(.summary) { missing.append(.summary) }
+            if !missing.isEmpty {
+                issues.append(.meshSpinePassIncomplete(edgeId: edge.id, missing: missing))
+            }
+        }
+        return issues
+    }
+
+    /// Soft checks for agentic-mesh shape. Skipped when the org does not look like a mesh,
+    /// so non-mesh workflows (e.g. planner→implementer→reviewer) stay clean.
+    public static func meshShapeWarnings(org: OrgGraph) -> [OrgValidationIssue] {
+        guard looksLikeMesh(org) else { return [] }
+
+        var warnings: [OrgValidationIssue] = []
+        let planners = org.nodes.filter { $0.role == "Planner" || $0.id.hasPrefix("planner-") }
+        if planners.isEmpty {
+            warnings.append(.meshNoPlanners)
+        }
+
+        let auditorId = org.nodes.first(where: { $0.role == "Auditor" || $0.id == "auditor" })?.id
+        let numberedPlanners = planners.compactMap { node -> (id: String, lane: Int)? in
+            guard let lane = laneIndex(node.id) else { return nil }
+            return (node.id, lane)
+        }
+
+        for pair in numberedPlanners {
+            let interpreterId = "interpreter-\(pair.lane)"
+            guard let interpreter = org.node(id: interpreterId) else {
+                warnings.append(
+                    .meshBrokenLanePairing(
+                        plannerId: pair.id,
+                        detail: "missing \(interpreterId)"
+                    )
+                )
+                continue
+            }
+            if interpreter.role != "Interpreter" {
+                warnings.append(
+                    .meshBrokenLanePairing(
+                        plannerId: pair.id,
+                        detail: "\(interpreterId) role is '\(interpreter.role)', expected Interpreter"
+                    )
+                )
+            }
+            let hasLaneEdge = org.edges.contains {
+                $0.type == .fixed && $0.from == pair.id && $0.to == interpreterId
+                    && ($0.on == .success || $0.on == .always)
+            }
+            if !hasLaneEdge {
+                warnings.append(
+                    .meshBrokenLanePairing(
+                        plannerId: pair.id,
+                        detail: "no success fixed edge to \(interpreterId)"
+                    )
+                )
+            }
+            if let auditorId {
+                let hasJoin = org.edges.contains {
+                    $0.type == .join && $0.from == interpreterId && $0.to == auditorId
+                }
+                if !hasJoin {
+                    warnings.append(
+                        .meshBrokenLanePairing(
+                            plannerId: pair.id,
+                            detail: "\(interpreterId) does not join into \(auditorId)"
+                        )
+                    )
+                }
+            }
+        }
+
+        if let auditorId {
+            let joinPreds = org.joinPredecessors(of: auditorId)
+            if joinPreds.isEmpty {
+                warnings.append(.meshMissingAuditorJoin)
+            }
+            let implementers = reachableImplementers(after: auditorId, in: org)
+            if implementers.count > 1 {
+                warnings.append(.meshMultiplePostAuditorImplementers(implementers))
+            }
+        }
+
+        return warnings
+    }
+
+    private static func looksLikeMesh(_ org: OrgGraph) -> Bool {
+        if org.edges.contains(where: { $0.type == .fanOut || $0.type == .join }) {
+            return true
+        }
+        if org.nodes.contains(where: { $0.role == "Auditor" || $0.id == "auditor" }) {
+            return true
+        }
+        if org.nodes.contains(where: { $0.id.hasPrefix("planner-") || $0.id.hasPrefix("interpreter-") }) {
+            return true
+        }
+        return false
+    }
+
+    /// Spine edges that must carry summary + artifacts for mesh handoff fidelity.
+    private static func isMeshSpineEdge(_ edge: OrgEdge, in org: OrgGraph) -> Bool {
+        let from = org.node(id: edge.from)
+        let toId = edge.to
+        let to = toId.flatMap { org.node(id: $0) }
+
+        // planner-N → interpreter-N (fixed)
+        if edge.type == .fixed,
+           let from,
+           let to,
+           (from.role == "Planner" || from.id.hasPrefix("planner-")),
+           (to.role == "Interpreter" || to.id.hasPrefix("interpreter-")) {
+            return true
+        }
+
+        // interpreter-N → auditor (join)
+        if edge.type == .join,
+           let from,
+           let to,
+           (from.role == "Interpreter" || from.id.hasPrefix("interpreter-")),
+           (to.role == "Auditor" || to.id == "auditor") {
+            return true
+        }
+
+        // auditor → implementer (fixed success path)
+        if edge.type == .fixed,
+           let from,
+           let to,
+           (from.role == "Auditor" || from.id == "auditor"),
+           to.role == "Implementer" {
+            return true
+        }
+
+        return false
+    }
+
+    private static func laneIndex(_ nodeId: String) -> Int? {
+        guard let dash = nodeId.lastIndex(of: "-") else { return nil }
+        return Int(nodeId[nodeId.index(after: dash)...])
+    }
+
+    /// Implementer-role nodes reachable on the success path starting from `auditorId`
+    /// (excluding the auditor itself).
+    private static func reachableImplementers(after auditorId: String, in org: OrgGraph) -> [String] {
+        var visited = Set<String>()
+        var queue = [auditorId]
+        var found: [String] = []
+        while let current = queue.first {
+            queue.removeFirst()
+            guard visited.insert(current).inserted else { continue }
+            for next in org.successNextNodeIds(from: current) {
+                if let node = org.node(id: next), node.role == "Implementer", next != auditorId {
+                    if !found.contains(next) {
+                        found.append(next)
+                    }
+                }
+                queue.append(next)
+            }
+        }
+        return found
     }
 }

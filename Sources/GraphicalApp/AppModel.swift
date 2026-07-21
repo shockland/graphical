@@ -78,6 +78,7 @@ final class AppModel {
     var liveLog: [String] { runSession.liveLog }
     var runPhase: String? { runSession.runPhase }
     var runIteration: Int? { runSession.runIteration }
+    var activeRunNodeIds: [String] { runSession.activeNodeIds }
     var pendingApproval: PendingApproval? { runSession.pendingApproval }
     var lastInspection: HandoffInspection? { runSession.lastInspection }
 
@@ -380,7 +381,7 @@ final class AppModel {
             notify()
             return
         }
-        if !validationIssues.isEmpty {
+        if validationIssues.contains(where: { !$0.isWarning }) {
             errorMessage = "Fix workflow validation issues before running"
             notify()
             return
@@ -416,6 +417,10 @@ final class AppModel {
                 guard let self else { return }
                 if let status { self.statusMessage = status }
                 if let error, self.errorMessage == nil { self.errorMessage = error }
+                // Approval pauses wait forever — jump to Run so Approve/Reject are visible.
+                if self.pendingApproval != nil {
+                    self.selectedTab = .run
+                }
                 self.notify()
             }
         )
@@ -446,6 +451,9 @@ final class AppModel {
                 guard let self else { return }
                 if let status { self.statusMessage = status }
                 if let error, self.errorMessage == nil { self.errorMessage = error }
+                if self.pendingApproval != nil {
+                    self.selectedTab = .run
+                }
                 self.notify()
             }
         )
@@ -461,7 +469,11 @@ final class AppModel {
     }
 
     func cancelRun() {
-        runSession.cancel(traceStore: traceStore)
+        runSession.cancel(traceStore: traceStore) { [weak self] in
+            guard let self else { return }
+            self.statusMessage = "Run cancelled"
+            self.notify()
+        }
         statusMessage = "Cancelling…"
         notify()
     }
@@ -497,6 +509,9 @@ final class AppModel {
                 if let status { self.statusMessage = status }
                 if let error, self.errorMessage == nil || status == "Can only retry a failed or cancelled run" {
                     self.errorMessage = error
+                }
+                if self.pendingApproval != nil {
+                    self.selectedTab = .run
                 }
                 self.notify()
             }

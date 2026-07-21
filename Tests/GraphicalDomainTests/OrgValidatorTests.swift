@@ -184,6 +184,99 @@ final class OrgValidatorTests: XCTestCase {
                 ),
                 runners: Self.defaultRunners,
                 matches: { if case .joinEdgeMissingTo = $0 { return true }; return false }
+            ),
+            Case(
+                name: "meshNoPlanners",
+                org: {
+                    var org = SeedTemplate.agenticMesh(width: 2)
+                    org.nodes.removeAll { $0.role == "Planner" || $0.id.hasPrefix("planner-") }
+                    org.edges = org.edges.compactMap { edge -> OrgEdge? in
+                        if edge.from.hasPrefix("planner-") { return nil }
+                        if edge.type == .fanOut {
+                            return OrgEdge(
+                                id: edge.id,
+                                from: edge.from,
+                                type: .fanOut,
+                                targets: edge.targets.filter { !$0.hasPrefix("planner-") },
+                                on: edge.on,
+                                pass: edge.pass
+                            )
+                        }
+                        return edge
+                    }
+                    return org
+                }(),
+                runners: SeedTemplate.defaultRunners(),
+                matches: { if case .meshNoPlanners = $0 { return true }; return false }
+            ),
+            Case(
+                name: "meshBrokenLanePairing",
+                org: {
+                    var org = SeedTemplate.agenticMesh(width: 2)
+                    org.nodes.removeAll { $0.id == "interpreter-1" }
+                    org.edges.removeAll { $0.to == "interpreter-1" || $0.from == "interpreter-1" }
+                    return org
+                }(),
+                runners: SeedTemplate.defaultRunners(),
+                matches: {
+                    if case .meshBrokenLanePairing("planner-1", _) = $0 { return true }
+                    return false
+                }
+            ),
+            Case(
+                name: "meshMissingAuditorJoin",
+                org: {
+                    var org = SeedTemplate.agenticMesh(width: 2)
+                    org.edges.removeAll { $0.type == .join }
+                    return org
+                }(),
+                runners: SeedTemplate.defaultRunners(),
+                matches: { if case .meshMissingAuditorJoin = $0 { return true }; return false }
+            ),
+            Case(
+                name: "meshMultiplePostAuditorImplementers",
+                org: {
+                    var org = SeedTemplate.agenticMesh(width: 2)
+                    org.nodes.append(
+                        OrgNode(
+                            id: "implementer-b",
+                            role: "Implementer",
+                            runner: "echo_fixture",
+                            done: .allOf([.artifact("implementation.md")])
+                        )
+                    )
+                    org.edges.append(
+                        OrgEdge(
+                            from: "auditor",
+                            to: "implementer-b",
+                            type: .fixed,
+                            on: .success
+                        )
+                    )
+                    return org
+                }(),
+                runners: SeedTemplate.defaultRunners(),
+                matches: {
+                    if case .meshMultiplePostAuditorImplementers = $0 { return true }
+                    return false
+                }
+            ),
+            Case(
+                name: "meshSpinePassIncomplete",
+                org: {
+                    var org = SeedTemplate.agenticMesh(width: 2)
+                    if let idx = org.edges.firstIndex(where: { $0.id == "planner-1-to-interpreter-1" }) {
+                        org.edges[idx].pass = [.checks]
+                    }
+                    return org
+                }(),
+                runners: SeedTemplate.defaultRunners(),
+                matches: {
+                    if case .meshSpinePassIncomplete("planner-1-to-interpreter-1", let missing) = $0 {
+                        return Set(missing) == [.artifacts, .summary]
+                    }
+                    return false
+                }
             )
         ]
     }
@@ -214,6 +307,23 @@ final class OrgValidatorTests: XCTestCase {
         XCTAssertEqual(org.edges.filter { $0.type == .join }.count, 3)
     }
 
+    func testAgenticMeshSeedUsesNilInheritModels() {
+        for width in [2, 3, 5] {
+            let org = SeedTemplate.agenticMesh(width: width)
+            XCTAssertTrue(
+                org.nodes.allSatisfy { $0.model == nil },
+                "width \(width): expected nil-inherit models, got \(org.nodes.map { ($0.id, $0.model) })"
+            )
+            let planners = org.nodes.filter { $0.id.hasPrefix("planner-") }
+            let interpreters = org.nodes.filter { $0.id.hasPrefix("interpreter-") }
+            XCTAssertEqual(planners.count, width)
+            XCTAssertEqual(interpreters.count, width)
+            XCTAssertTrue(planners.allSatisfy { $0.instructions.contains("plan.md") })
+            XCTAssertTrue(interpreters.allSatisfy { $0.instructions.contains("Plan goals") })
+            XCTAssertTrue(org.node(id: "auditor")?.instructions.contains("Merged Objectives") == true)
+        }
+    }
+
     func testMeshWidthInvalidWhenPassed() {
         let org = SeedTemplate.agenticMesh(width: 3)
         let issues = OrgValidator.validate(
@@ -227,5 +337,171 @@ final class OrgValidatorTests: XCTestCase {
     func testEmptyOrgShortCircuitsWithoutOtherIssues() {
         let issues = OrgValidator.validate(org: OrgGraph(), runners: Self.defaultRunners)
         XCTAssertEqual(issues, [.emptyOrg])
+    }
+
+    func testNonMeshWorkflowHasNoMeshWarnings() {
+        let org = SeedTemplate.plannerImplementerReviewer()
+        let issues = OrgValidator.validate(org: org, runners: SeedTemplate.defaultRunners())
+        XCTAssertTrue(issues.filter(\.isWarning).isEmpty)
+        XCTAssertTrue(issues.filter { !$0.isWarning }.isEmpty)
+    }
+
+    func testMeshNoPlannersWarning() {
+        var org = SeedTemplate.agenticMesh(width: 2)
+        org.nodes.removeAll { $0.role == "Planner" || $0.id.hasPrefix("planner-") }
+        org.edges = org.edges.compactMap { edge -> OrgEdge? in
+            if edge.from.hasPrefix("planner-") { return nil }
+            if edge.type == .fanOut {
+                return OrgEdge(
+                    id: edge.id,
+                    from: edge.from,
+                    type: .fanOut,
+                    targets: edge.targets.filter { !$0.hasPrefix("planner-") },
+                    on: edge.on,
+                    pass: edge.pass
+                )
+            }
+            return edge
+        }
+        let issues = OrgValidator.validate(org: org, runners: SeedTemplate.defaultRunners())
+        XCTAssertTrue(
+            issues.contains { if case .meshNoPlanners = $0 { return true }; return false },
+            "got: \(issues.map(\.message))"
+        )
+        XCTAssertTrue(issues.contains { $0.isWarning })
+    }
+
+    func testMeshBrokenLanePairingWarning() {
+        var org = SeedTemplate.agenticMesh(width: 2)
+        org.edges.removeAll { $0.from == "planner-1" && $0.to == "interpreter-1" }
+        let issues = OrgValidator.validate(org: org, runners: SeedTemplate.defaultRunners())
+        XCTAssertTrue(
+            issues.contains {
+                if case .meshBrokenLanePairing("planner-1", _) = $0 { return true }
+                return false
+            },
+            "got: \(issues.map(\.message))"
+        )
+        XCTAssertTrue(issues.contains { $0.isWarning })
+        XCTAssertTrue(issues.filter { !$0.isWarning }.isEmpty)
+    }
+
+    func testMeshMissingAuditorJoinWarning() {
+        var org = SeedTemplate.agenticMesh(width: 2)
+        org.edges.removeAll { $0.type == .join }
+        let issues = OrgValidator.validate(org: org, runners: SeedTemplate.defaultRunners())
+        XCTAssertTrue(
+            issues.contains { if case .meshMissingAuditorJoin = $0 { return true }; return false },
+            "got: \(issues.map(\.message))"
+        )
+    }
+
+    func testMeshMultiplePostAuditorImplementersWarning() {
+        var org = SeedTemplate.agenticMesh(width: 2)
+        org.nodes.append(
+            OrgNode(
+                id: "implementer-b",
+                role: "Implementer",
+                runner: "echo_fixture",
+                done: .allOf([.artifact("implementation.md")])
+            )
+        )
+        org.edges.append(
+            OrgEdge(
+                id: "auditor-to-implementer-b",
+                from: "auditor",
+                to: "implementer-b",
+                type: .fixed,
+                on: .success
+            )
+        )
+        let issues = OrgValidator.validate(org: org, runners: SeedTemplate.defaultRunners())
+        XCTAssertTrue(
+            issues.contains {
+                if case .meshMultiplePostAuditorImplementers(let ids) = $0 {
+                    return Set(ids) == ["implementer", "implementer-b"]
+                }
+                return false
+            },
+            "got: \(issues.map(\.message))"
+        )
+    }
+
+    func testMeshSpinePassIncompleteHardFails() {
+        var org = SeedTemplate.agenticMesh(width: 2)
+        if let idx = org.edges.firstIndex(where: { $0.id == "interpreter-1-join-auditor" }) {
+            org.edges[idx].pass = [.checks, .notes]
+        }
+        if let idx = org.edges.firstIndex(where: { $0.id == "auditor-to-implementer" }) {
+            org.edges[idx].pass = [.summary]
+        }
+        let issues = OrgValidator.validate(org: org, runners: SeedTemplate.defaultRunners())
+        XCTAssertTrue(
+            issues.contains {
+                if case .meshSpinePassIncomplete("interpreter-1-join-auditor", let missing) = $0 {
+                    return Set(missing) == [.artifacts, .summary]
+                }
+                return false
+            },
+            "got: \(issues.map(\.message))"
+        )
+        XCTAssertTrue(
+            issues.contains {
+                if case .meshSpinePassIncomplete("auditor-to-implementer", let missing) = $0 {
+                    return missing == [.artifacts]
+                }
+                return false
+            },
+            "got: \(issues.map(\.message))"
+        )
+        XCTAssertTrue(issues.contains { !$0.isWarning }, "pass-list incompleteness must hard-fail")
+        // Non-spine edges (entry fan-out, implementer→report) can strip pass without this issue.
+        if let idx = org.edges.firstIndex(where: { $0.id == "implementer-to-report" }) {
+            org.edges[idx].pass = [.checks]
+        }
+        // Restore spine edges so only non-spine is stripped.
+        if let idx = org.edges.firstIndex(where: { $0.id == "interpreter-1-join-auditor" }) {
+            org.edges[idx].pass = [.summary, .artifacts, .checks]
+        }
+        if let idx = org.edges.firstIndex(where: { $0.id == "auditor-to-implementer" }) {
+            org.edges[idx].pass = [.summary, .artifacts, .checks]
+        }
+        let after = OrgValidator.validate(org: org, runners: SeedTemplate.defaultRunners())
+        XCTAssertFalse(
+            after.contains { if case .meshSpinePassIncomplete = $0 { return true }; return false },
+            "non-spine strip should not hard-fail: \(after.map(\.message))"
+        )
+    }
+
+    func testClassicOrgStrippedPassDoesNotTriggerMeshSpineIssue() {
+        var org = SeedTemplate.plannerImplementerReviewer()
+        for idx in org.edges.indices {
+            org.edges[idx].pass = [.checks]
+        }
+        let issues = OrgValidator.validate(org: org, runners: SeedTemplate.defaultRunners())
+        XCTAssertFalse(
+            issues.contains { if case .meshSpinePassIncomplete = $0 { return true }; return false }
+        )
+    }
+
+    func testJoinPredecessorsSortNumerically() {
+        let org = OrgGraph(
+            nodes: [
+                node(id: "auditor"),
+                node(id: "interpreter-1"),
+                node(id: "interpreter-2"),
+                node(id: "interpreter-10")
+            ],
+            edges: [
+                OrgEdge(from: "interpreter-10", to: "auditor", type: .join),
+                OrgEdge(from: "interpreter-2", to: "auditor", type: .join),
+                OrgEdge(from: "interpreter-1", to: "auditor", type: .join)
+            ],
+            entry: "interpreter-1"
+        )
+        XCTAssertEqual(
+            org.joinPredecessors(of: "auditor"),
+            ["interpreter-1", "interpreter-2", "interpreter-10"]
+        )
     }
 }

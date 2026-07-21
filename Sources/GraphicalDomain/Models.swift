@@ -313,10 +313,26 @@ public struct OrgGraph: Codable, Equatable, Sendable {
     }
 
     /// Predecessors that must succeed before `nodeId` may run, via inbound `.join` edges.
+    /// Ordered by numeric lane suffix when present (`interpreter-2` before `interpreter-10`),
+    /// otherwise by node id — never raw lexical sort alone.
     public func joinPredecessors(of nodeId: String) -> [String] {
         edges
             .filter { $0.type == .join && $0.to == nodeId }
             .map(\.from)
+            .sorted(by: Self.laneAwareNodeIdLessThan)
+    }
+
+    /// `interpreter-2` < `interpreter-10`; ties and non-suffixed ids fall back to string compare.
+    public static func laneAwareNodeIdLessThan(_ lhs: String, _ rhs: String) -> Bool {
+        if let left = laneIndex(lhs), let right = laneIndex(rhs), left != right {
+            return left < right
+        }
+        return lhs < rhs
+    }
+
+    private static func laneIndex(_ nodeId: String) -> Int? {
+        guard let dash = nodeId.lastIndex(of: "-") else { return nil }
+        return Int(nodeId[nodeId.index(after: dash)...])
     }
 
     public var entryNodeId: String? {

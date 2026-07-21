@@ -344,7 +344,8 @@ final class MainWindowController: NSWindowController, AppModelDelegate, NSWindow
         for item in tabMenuItems {
             item.isEnabled = hasProject
         }
-        cancelMenuItem?.isEnabled = hasProject && model.isRunning
+        cancelMenuItem?.isEnabled = hasProject
+            && (model.isRunning || model.pendingApproval != nil)
     }
 
     func appModelDidChange(_ model: AppModel) {
@@ -630,8 +631,16 @@ final class ValidationBannerView: NSView {
     func setIssues(_ issues: [OrgValidationIssue]) {
         self.issues = issues
         let count = issues.count
-        let noun = count == 1 ? "issue" : "issues"
-        let text = "\(count) workflow \(noun) — click to review"
+        let errors = issues.filter { !$0.isWarning }.count
+        let warnings = issues.filter(\.isWarning).count
+        let text: String
+        if errors == 0, warnings > 0 {
+            let noun = warnings == 1 ? "warning" : "warnings"
+            text = "\(warnings) workflow \(noun) (advisory) — click to review"
+        } else {
+            let noun = count == 1 ? "issue" : "issues"
+            text = "\(count) workflow \(noun) — click to review"
+        }
         summaryButton.contentTintColor = nil
         summaryButton.attributedTitle = NSAttributedString(
             string: text,

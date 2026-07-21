@@ -37,7 +37,9 @@ public struct ProjectReadiness: Equatable, Sendable {
             guard let runner = runners.runners[node.runner] else { return false }
             return !runner.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        let graphValid = OrgValidator.validate(org: org, runners: runners).isEmpty
+        let graphValid = OrgValidator.validate(org: org, runners: runners)
+            .filter { !$0.isWarning }
+            .isEmpty
 
         let nextAction: RecommendedAction
         if !goalPresent {
