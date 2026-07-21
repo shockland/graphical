@@ -61,6 +61,28 @@ public enum OrgEditing {
         return next
     }
 
+    /// Copies `runner` + `model` from `sourceId` onto every other node with the same `role`.
+    /// Returns the updated org and how many peers changed.
+    public static func mirrorAgentAndModel(
+        from sourceId: String,
+        in org: OrgGraph
+    ) -> (org: OrgGraph, updatedCount: Int) {
+        guard let source = org.node(id: sourceId) else {
+            return (org, 0)
+        }
+        var next = org
+        var updatedCount = 0
+        for index in next.nodes.indices {
+            let node = next.nodes[index]
+            guard node.id != sourceId, node.role == source.role else { continue }
+            guard node.runner != source.runner || node.model != source.model else { continue }
+            next.nodes[index].runner = source.runner
+            next.nodes[index].model = source.model
+            updatedCount += 1
+        }
+        return (next, updatedCount)
+    }
+
     public static func removeNode(id: String, from org: OrgGraph) -> RemoveNodeResult {
         var next = org
         next.nodes.removeAll { $0.id == id }
@@ -117,6 +139,32 @@ public enum OrgEditing {
             on: on,
             requiresApproval: requiresApproval
         )
+        next.edges.append(edge)
+        return EdgeResult(org: next, edgeId: edge.id)
+    }
+
+    /// Connects a fan-out edge that activates all `targets` after success.
+    public static func connectFanOut(
+        from: String,
+        targets: [String],
+        in org: OrgGraph,
+        on: EdgeCondition = .success
+    ) -> EdgeResult {
+        var next = org
+        let edge = OrgEdge(from: from, type: .fanOut, targets: targets, on: on)
+        next.edges.append(edge)
+        return EdgeResult(org: next, edgeId: edge.id)
+    }
+
+    /// Connects a join barrier edge; destination waits for all inbound join predecessors.
+    public static func connectJoin(
+        from: String,
+        to: String,
+        in org: OrgGraph,
+        on: EdgeCondition = .success
+    ) -> EdgeResult {
+        var next = org
+        let edge = OrgEdge(from: from, to: to, type: .join, on: on)
         next.edges.append(edge)
         return EdgeResult(org: next, edgeId: edge.id)
     }

@@ -196,4 +196,34 @@ final class WorkingPacketBuilderTests: XCTestCase {
         XCTAssertTrue(packet.contains("model_hint: opus"))
         XCTAssertFalse(packet.contains("model_hint: sonnet"))
     }
+
+    func testPacketListsMultiInboundHandoffs() {
+        let node = makeNode(id: "auditor")
+        let inbounds: [(fromNodeId: String, contract: HandoffContract)] = [
+            ("interpreter-1", HandoffContract(
+                summary: "Lane 1 ready",
+                artifacts: ["/tmp/run/interpreter-1/interpretation.md"]
+            )),
+            ("interpreter-2", HandoffContract(
+                summary: "Lane 2 ready",
+                artifacts: ["/tmp/run/interpreter-2/interpretation.md"]
+            ))
+        ]
+        let packet = WorkingPacketBuilder.build(
+            project: makeProject(),
+            run: makeRun(),
+            node: node,
+            iteration: 1,
+            inbound: nil,
+            missingChecks: [],
+            nodeArtifacts: URL(fileURLWithPath: "/tmp/artifacts/auditor"),
+            inbounds: inbounds
+        )
+        XCTAssertTrue(packet.contains("## Inbound Handoffs"))
+        XCTAssertTrue(packet.contains("### From interpreter-1"))
+        XCTAssertTrue(packet.contains("### From interpreter-2"))
+        XCTAssertTrue(packet.contains("Lane 1 ready"))
+        XCTAssertTrue(packet.contains("/tmp/run/interpreter-2/interpretation.md"))
+        XCTAssertFalse(packet.contains("## Inbound Handoff\n"))
+    }
 }

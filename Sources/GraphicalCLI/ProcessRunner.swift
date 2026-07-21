@@ -70,7 +70,7 @@ public enum ProcessRunnerError: Error, LocalizedError, Equatable {
     }
 }
 
-/// Runs subprocesses; `cancelCurrent()` terminates the active child (no-op when idle).
+/// Runs subprocesses; `cancelCurrent()` terminates every active child (no-op when idle).
 ///
 /// `inheritEnvironment` controls the environment starting point: `true` merges
 /// `environment` on top of the full host process environment (agent/model-discovery
@@ -98,9 +98,14 @@ public protocol ProcessExecuting: Sendable {
     ) async throws -> ProcessResult
 
     func cancelCurrent()
+
+    /// Clears any cancel latch before a new run/retry so launches are allowed again.
+    func prepareForNewRun()
 }
 
 extension ProcessExecuting {
+    public func prepareForNewRun() {}
+
     /// Compatibility path for process executors that do not provide true streaming.
     /// `ProcessRunner` overrides this and delivers chunks while its child is running.
     public func run(
@@ -176,6 +181,11 @@ public struct ProcessRunner: ProcessExecuting {
 
     public func cancelCurrent() {
         activeProcess.cancelCurrent()
+    }
+
+    /// Clears the cancel latch so the next `run` can launch (called by RunEngine on start/retry).
+    public func prepareForNewRun() {
+        activeProcess.clearCancelled()
     }
 
     public func run(
@@ -333,7 +343,7 @@ public struct ProcessRunner: ProcessExecuting {
         }
 
         handle.register(process)
-        defer { handle.unregister() }
+        defer { handle.unregister(process) }
 
         let deadline = timeoutSeconds > 0
             ? Date().addingTimeInterval(TimeInterval(timeoutSeconds))
@@ -387,21 +397,34 @@ public struct ProcessRunner: ProcessExecuting {
     }
 }
 
+/// Tracks zero-or-more live children so fan-out lanes can run concurrently.
+/// `cancelCurrent()` terminates every registered process and keeps the cancelled
+/// latch set until the next successful `clearCancelled()` (start of a new run).
 private final class ActiveProcessHandle: @unchecked Sendable {
     private let lock = NSLock()
-    private var process: Process?
+    private var processes: [ObjectIdentifier: Process] = [:]
     private var cancelled = false
 
     func register(_ process: Process) {
         lock.lock()
-        self.process = process
-        self.cancelled = false
+        processes[ObjectIdentifier(process)] = process
+        let shouldStop = cancelled
+        lock.unlock()
+        if shouldStop {
+            terminate(process)
+        }
+    }
+
+    func unregister(_ process: Process) {
+        lock.lock()
+        processes.removeValue(forKey: ObjectIdentifier(process))
         lock.unlock()
     }
 
-    func unregister() {
+    /// Clears the cancel latch so a subsequent run can launch children.
+    func clearCancelled() {
         lock.lock()
-        process = nil
+        cancelled = false
         lock.unlock()
     }
 
@@ -414,10 +437,11 @@ private final class ActiveProcessHandle: @unchecked Sendable {
     func cancelCurrent() {
         lock.lock()
         cancelled = true
-        let proc = process
+        let procs = Array(processes.values)
         lock.unlock()
-        guard let proc else { return }
-        terminate(proc)
+        for proc in procs {
+            terminate(proc)
+        }
     }
 
     func terminate(_ process: Process) {

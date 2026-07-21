@@ -11,7 +11,7 @@ final class RunEngineTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = YAMLStore()
-        let project = try store.createProject(at: root, name: "Slice", seedTemplate: true)
+        let project = try store.createProject(at: root, name: "Slice", seed: .plannerImplementerReviewer)
         let trace = try TraceStore(inMemory: true)
         let engine = RunEngine(store: trace)
 
@@ -50,13 +50,142 @@ final class RunEngineTests: XCTestCase {
         XCTAssertFalse(json.isEmpty)
     }
 
+    func testAgenticMeshFanOutJoinAndAuditorPacket() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graphical-mesh-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = try YAMLStore().createProject(
+            at: root,
+            name: "Mesh",
+            seed: .agenticMesh,
+            meshWidth: 2
+        )
+        // Skip approval gate so the run completes in one start() call.
+        if let idx = project.org.edges.firstIndex(where: { $0.id == "auditor-to-implementer" }) {
+            project.org.edges[idx].requiresApproval = false
+        }
+
+        let invokeCounter = CountingProcessRunner()
+        let store = try TraceStore(inMemory: true)
+        let engine = RunEngine(store: store, processRunner: invokeCounter)
+        let finished = try await engine.start(project: project, goal: "Mesh the goal")
+        let events = try await store.events(runId: finished.id)
+        let log = await engine.liveLog
+
+        XCTAssertEqual(
+            finished.status,
+            .succeeded,
+            "Expected mesh success, events: \(events.map(\.message)), log: \(log)"
+        )
+
+        let invokeCount = invokeCounter.invokeCount
+        // entry + 2 planners + 2 interpreters + auditor + implementer + report = 8
+        // Done-checks also invoke the process runner for shell checks (implementer).
+        XCTAssertGreaterThanOrEqual(invokeCount, 8, "Expected sequential lane invokes, got \(invokeCount)")
+
+        XCTAssertTrue(events.contains { $0.kind == .joinReady })
+        XCTAssertTrue(events.contains { $0.message.contains("Fan-out") })
+
+        let auditorPacket = GraphicalPaths.nodeArtifacts(
+            projectRoot: root,
+            runId: finished.id,
+            nodeId: "auditor"
+        ).appendingPathComponent("packet-1.md")
+        let auditorText = try String(contentsOf: auditorPacket, encoding: .utf8)
+        XCTAssertTrue(auditorText.contains("## Inbound Handoffs"))
+        XCTAssertTrue(auditorText.contains("### From interpreter-1"))
+        XCTAssertTrue(auditorText.contains("### From interpreter-2"))
+
+        let implementerPacket = GraphicalPaths.nodeArtifacts(
+            projectRoot: root,
+            runId: finished.id,
+            nodeId: "implementer"
+        ).appendingPathComponent("packet-1.md")
+        let implementerText = try String(contentsOf: implementerPacket, encoding: .utf8)
+        XCTAssertTrue(implementerText.contains("## Inbound Handoff"))
+        XCTAssertFalse(implementerText.contains("## Inbound Handoffs"))
+        XCTAssertTrue(implementerText.contains("Auditor chose the final plan"))
+        XCTAssertFalse(implementerText.contains("### From interpreter-1"))
+
+        let report = GraphicalPaths.nodeArtifacts(
+            projectRoot: root,
+            runId: finished.id,
+            nodeId: "report"
+        ).appendingPathComponent("report.md")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: report.path))
+
+        XCTAssertTrue(log.contains { $0.contains("fan-out") }, "log: \(log)")
+        XCTAssertTrue(log.contains { $0.contains("Join barrier met") }, "log: \(log)")
+        XCTAssertTrue(log.contains { $0.contains("parallel") }, "log: \(log)")
+    }
+
+    func testFanOutLanesOverlapWhenParallelEnabled() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graphical-mesh-par-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = try YAMLStore().createProject(
+            at: root,
+            name: "MeshPar",
+            seed: .agenticMesh,
+            meshWidth: 2
+        )
+        project.config.parallelFanOut = true
+        if let idx = project.org.edges.firstIndex(where: { $0.id == "auditor-to-implementer" }) {
+            project.org.edges[idx].requiresApproval = false
+        }
+
+        let peakRunner = PeakConcurrencyProcessRunner(sleepNanoseconds: 150_000_000)
+        let engine = RunEngine(store: try TraceStore(inMemory: true), processRunner: peakRunner)
+        let finished = try await engine.start(project: project, goal: "Overlap lanes")
+        XCTAssertEqual(finished.status, .succeeded)
+        XCTAssertGreaterThanOrEqual(
+            peakRunner.peakConcurrency,
+            2,
+            "Expected planner lanes to overlap, peak=\(peakRunner.peakConcurrency)"
+        )
+    }
+
+    func testFanOutLanesStaySerialWhenParallelDisabled() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graphical-mesh-ser-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = try YAMLStore().createProject(
+            at: root,
+            name: "MeshSer",
+            seed: .agenticMesh,
+            meshWidth: 2
+        )
+        project.config.parallelFanOut = false
+        if let idx = project.org.edges.firstIndex(where: { $0.id == "auditor-to-implementer" }) {
+            project.org.edges[idx].requiresApproval = false
+        }
+
+        let peakRunner = PeakConcurrencyProcessRunner(sleepNanoseconds: 80_000_000)
+        let engine = RunEngine(store: try TraceStore(inMemory: true), processRunner: peakRunner)
+        let finished = try await engine.start(project: project, goal: "Serial lanes")
+        let log = await engine.liveLog
+        XCTAssertEqual(finished.status, .succeeded)
+        XCTAssertEqual(
+            peakRunner.peakConcurrency,
+            1,
+            "Expected serial lane invokes, peak=\(peakRunner.peakConcurrency), log=\(log)"
+        )
+        XCTAssertTrue(log.contains { $0.contains("queued") }, "log: \(log)")
+    }
+
     func testRouterRejectsUnknownTarget() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("graphical-bad-router-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        var project = try YAMLStore().createProject(at: root, name: "Bad", seedTemplate: true)
+        var project = try YAMLStore().createProject(at: root, name: "Bad", seed: .plannerImplementerReviewer)
         project.runners.runners["echo_fixture"] = RunnerTemplate(
             command: "/bin/bash",
             args: [
@@ -86,7 +215,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        var project = try YAMLStore().createProject(at: root, name: "Heartbeat", seedTemplate: true)
+        var project = try YAMLStore().createProject(at: root, name: "Heartbeat", seed: .plannerImplementerReviewer)
         project.org = OrgGraph(
             nodes: [
                 OrgNode(
@@ -152,7 +281,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        var project = try YAMLStore().createProject(at: root, name: "PacketDocs", seedTemplate: true)
+        var project = try YAMLStore().createProject(at: root, name: "PacketDocs", seed: .plannerImplementerReviewer)
         let nodeA = OrgNode(id: "a", role: "A", runner: "echo_fixture", done: .allOf([.artifact("output.md")]))
         let nodeB = OrgNode(id: "b", role: "B", runner: "echo_fixture", done: .allOf([.artifact("output.md")]))
         let edgeAB = OrgEdge(from: "a", to: "b", type: .fixed, on: .success)
@@ -268,7 +397,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let project = try YAMLStore().createProject(at: root, name: "ShellSafe", seedTemplate: true)
+        let project = try YAMLStore().createProject(at: root, name: "ShellSafe", seed: .plannerImplementerReviewer)
         let trace = try TraceStore(inMemory: true)
         let engine = RunEngine(store: trace)
         let first = try await engine.start(project: project, goal: "shell-safe root")
@@ -281,7 +410,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let project = try YAMLStore().createProject(at: root, seedTemplate: true)
+        let project = try YAMLStore().createProject(at: root, seed: .plannerImplementerReviewer)
         let engine = RunEngine(store: try TraceStore(inMemory: true))
         let run = try await engine.start(project: project, goal: "c")
         XCTAssertEqual(run.status, .awaitingApproval)
@@ -296,7 +425,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        var project = try YAMLStore().createProject(at: root, name: "Terminal", seedTemplate: true)
+        var project = try YAMLStore().createProject(at: root, name: "Terminal", seed: .plannerImplementerReviewer)
         project.org = OrgGraph(
             nodes: [
                 OrgNode(
@@ -344,7 +473,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let project = try YAMLStore().createProject(at: root, seedTemplate: true)
+        let project = try YAMLStore().createProject(at: root, seed: .plannerImplementerReviewer)
         let blockingRunner = BlockingProcessRunner()
         let engine = RunEngine(store: try TraceStore(inMemory: true), processRunner: blockingRunner)
 
@@ -469,7 +598,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        var project = try YAMLStore().createProject(at: root, name: "Retry", seedTemplate: true)
+        var project = try YAMLStore().createProject(at: root, name: "Retry", seed: .plannerImplementerReviewer)
         // Node "a" is satisfied by the echo_fixture wildcard case (writes output.md).
         // Node "b" requires an artifact the runner never creates, so it always
         // exhausts its iteration budget and the run fails with "b" active.
@@ -597,7 +726,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        var project = try YAMLStore().createProject(at: root, name: "RejectEdge", seedTemplate: true)
+        var project = try YAMLStore().createProject(at: root, name: "RejectEdge", seed: .plannerImplementerReviewer)
         project.runners.runners["runner_a"] = RunnerTemplate(
             command: "/bin/bash",
             args: [
@@ -659,7 +788,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        var project = try YAMLStore().createProject(at: root, name: "RejectNoEdge", seedTemplate: true)
+        var project = try YAMLStore().createProject(at: root, name: "RejectNoEdge", seed: .plannerImplementerReviewer)
         project.runners.runners["runner_solo"] = RunnerTemplate(
             command: "/bin/bash",
             args: [
@@ -702,7 +831,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let project = try YAMLStore().createProject(at: root, name: "NoReject", seedTemplate: true)
+        let project = try YAMLStore().createProject(at: root, name: "NoReject", seed: .plannerImplementerReviewer)
         let trace = try TraceStore(inMemory: true)
         let engine = RunEngine(store: trace)
         let first = try await engine.start(project: project, goal: "no reject happy path")
@@ -717,7 +846,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let project = try YAMLStore().createProject(at: root, name: "TraceRedact", seedTemplate: true)
+        let project = try YAMLStore().createProject(at: root, name: "TraceRedact", seed: .plannerImplementerReviewer)
         XCTAssertFalse(project.config.traceCLIOutput, "Expected traceCLIOutput to default to false")
 
         let trace = try TraceStore(inMemory: true)
@@ -749,7 +878,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        var project = try YAMLStore().createProject(at: root, name: "TraceOptIn", seedTemplate: true)
+        var project = try YAMLStore().createProject(at: root, name: "TraceOptIn", seed: .plannerImplementerReviewer)
         project.config.traceCLIOutput = true
 
         let trace = try TraceStore(inMemory: true)
@@ -790,7 +919,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let project = try YAMLStore().createProject(at: root, seedTemplate: true)
+        let project = try YAMLStore().createProject(at: root, seed: .plannerImplementerReviewer)
         let engine = RunEngine(store: try TraceStore(inMemory: true))
         _ = try await engine.start(project: project, goal: "reject me")
         let run = try await engine.rejectApproval(notes: "nope")
@@ -803,7 +932,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        var project = try YAMLStore().createProject(at: root, name: "StreamLive", seedTemplate: true)
+        var project = try YAMLStore().createProject(at: root, name: "StreamLive", seed: .plannerImplementerReviewer)
         project.org = OrgGraph(
             nodes: [
                 OrgNode(
@@ -893,7 +1022,7 @@ final class RunEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        var project = try YAMLStore().createProject(at: root, name: "StreamJSON", seedTemplate: true)
+        var project = try YAMLStore().createProject(at: root, name: "StreamJSON", seed: .plannerImplementerReviewer)
         project.org = OrgGraph(
             nodes: [
                 OrgNode(
@@ -973,6 +1102,143 @@ private actor ProgressPhaseCollector {
 
     func append(_ phase: String?) {
         values.append(phase)
+    }
+}
+
+/// Sleeps briefly around each real process to expose overlapping lane invokes.
+private final class PeakConcurrencyProcessRunner: ProcessExecuting, @unchecked Sendable {
+    private let inner = ProcessRunner()
+    private let sleepNanoseconds: UInt64
+    private let lock = NSLock()
+    private var active = 0
+    private(set) var peakConcurrency = 0
+
+    init(sleepNanoseconds: UInt64) {
+        self.sleepNanoseconds = sleepNanoseconds
+    }
+
+    func run(
+        command: String,
+        arguments: [String],
+        workingDirectory: String?,
+        environment: [String: String],
+        timeoutSeconds: Int,
+        inheritEnvironment: Bool
+    ) async throws -> ProcessResult {
+        begin()
+        defer { end() }
+        try await Task.sleep(nanoseconds: sleepNanoseconds)
+        return try await inner.run(
+            command: command,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environment: environment,
+            timeoutSeconds: timeoutSeconds,
+            inheritEnvironment: inheritEnvironment
+        )
+    }
+
+    func run(
+        command: String,
+        arguments: [String],
+        workingDirectory: String?,
+        environment: [String: String],
+        timeoutSeconds: Int,
+        inheritEnvironment: Bool,
+        onOutput: @escaping @Sendable (ProcessOutputChunk) async -> Void
+    ) async throws -> ProcessResult {
+        begin()
+        defer { end() }
+        try await Task.sleep(nanoseconds: sleepNanoseconds)
+        return try await inner.run(
+            command: command,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environment: environment,
+            timeoutSeconds: timeoutSeconds,
+            inheritEnvironment: inheritEnvironment,
+            onOutput: onOutput
+        )
+    }
+
+    func cancelCurrent() {
+        inner.cancelCurrent()
+    }
+
+    func prepareForNewRun() {
+        inner.prepareForNewRun()
+    }
+
+    private func begin() {
+        lock.lock()
+        active += 1
+        peakConcurrency = max(peakConcurrency, active)
+        lock.unlock()
+    }
+
+    private func end() {
+        lock.lock()
+        active -= 1
+        lock.unlock()
+    }
+}
+
+/// Counts process launches while delegating to a real `ProcessRunner`.
+private final class CountingProcessRunner: ProcessExecuting, @unchecked Sendable {
+    private let inner = ProcessRunner()
+    private let queue = DispatchQueue(label: "CountingProcessRunner")
+    private var _invokeCount = 0
+
+    var invokeCount: Int {
+        queue.sync { _invokeCount }
+    }
+
+    func run(
+        command: String,
+        arguments: [String],
+        workingDirectory: String?,
+        environment: [String: String],
+        timeoutSeconds: Int,
+        inheritEnvironment: Bool
+    ) async throws -> ProcessResult {
+        queue.sync { _invokeCount += 1 }
+        return try await inner.run(
+            command: command,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environment: environment,
+            timeoutSeconds: timeoutSeconds,
+            inheritEnvironment: inheritEnvironment
+        )
+    }
+
+    func run(
+        command: String,
+        arguments: [String],
+        workingDirectory: String?,
+        environment: [String: String],
+        timeoutSeconds: Int,
+        inheritEnvironment: Bool,
+        onOutput: @escaping @Sendable (ProcessOutputChunk) async -> Void
+    ) async throws -> ProcessResult {
+        queue.sync { _invokeCount += 1 }
+        return try await inner.run(
+            command: command,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environment: environment,
+            timeoutSeconds: timeoutSeconds,
+            inheritEnvironment: inheritEnvironment,
+            onOutput: onOutput
+        )
+    }
+
+    func cancelCurrent() {
+        inner.cancelCurrent()
+    }
+
+    func prepareForNewRun() {
+        inner.prepareForNewRun()
     }
 }
 

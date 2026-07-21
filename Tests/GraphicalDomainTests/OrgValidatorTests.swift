@@ -136,6 +136,54 @@ final class OrgValidatorTests: XCTestCase {
                 org: OrgGraph(nodes: [node(id: "a", done: .allOf([]))], edges: [], entry: "a"),
                 runners: Self.defaultRunners,
                 matches: { if case .emptyDoneChecks(let id) = $0 { return id == "a" }; return false }
+            ),
+            Case(
+                name: "fanOutWithoutTargets",
+                org: OrgGraph(
+                    nodes: [node(id: "a")],
+                    edges: [OrgEdge(from: "a", type: .fanOut, targets: [])],
+                    entry: "a"
+                ),
+                runners: Self.defaultRunners,
+                matches: { if case .fanOutWithoutTargets = $0 { return true }; return false }
+            ),
+            Case(
+                name: "fanOutTargetUnknown",
+                org: OrgGraph(
+                    nodes: [node(id: "a")],
+                    edges: [OrgEdge(from: "a", type: .fanOut, targets: ["ghost"])],
+                    entry: "a"
+                ),
+                runners: Self.defaultRunners,
+                matches: { if case .fanOutTargetUnknown(_, let target) = $0 { return target == "ghost" }; return false }
+            ),
+            Case(
+                name: "fanOutTooLarge",
+                org: OrgGraph(
+                    nodes: [node(id: "a")] + (0..<(OrgValidator.maxMeshWidth + 1)).map { node(id: "t\($0)") },
+                    edges: [
+                        OrgEdge(
+                            from: "a",
+                            type: .fanOut,
+                            targets: (0..<(OrgValidator.maxMeshWidth + 1)).map { "t\($0)" }
+                        )
+                    ],
+                    entry: "a"
+                ),
+                runners: Self.defaultRunners,
+                matches: { if case .fanOutTooLarge(_, let count, let max) = $0 {
+                    return count == OrgValidator.maxMeshWidth + 1 && max == OrgValidator.maxMeshWidth
+                }; return false }
+            ),
+            Case(
+                name: "joinEdgeMissingTo",
+                org: OrgGraph(
+                    nodes: [node(id: "a")],
+                    edges: [OrgEdge(from: "a", to: nil, type: .join)],
+                    entry: "a"
+                ),
+                runners: Self.defaultRunners,
+                matches: { if case .joinEdgeMissingTo = $0 { return true }; return false }
             )
         ]
     }
@@ -154,6 +202,26 @@ final class OrgValidatorTests: XCTestCase {
         let org = SeedTemplate.plannerImplementerReviewer()
         let issues = OrgValidator.validate(org: org, runners: SeedTemplate.defaultRunners())
         XCTAssertTrue(issues.isEmpty, "Expected no issues, got: \(issues.map(\.message))")
+    }
+
+    func testAgenticMeshSeedValidates() {
+        let org = SeedTemplate.agenticMesh(width: 3)
+        let issues = OrgValidator.validate(org: org, runners: SeedTemplate.defaultRunners())
+        XCTAssertTrue(issues.isEmpty, "Expected no issues, got: \(issues.map(\.message))")
+        XCTAssertEqual(org.nodes.filter { $0.id.hasPrefix("planner-") }.count, 3)
+        XCTAssertEqual(org.nodes.filter { $0.id.hasPrefix("interpreter-") }.count, 3)
+        XCTAssertEqual(org.edges.filter { $0.type == .fanOut }.count, 1)
+        XCTAssertEqual(org.edges.filter { $0.type == .join }.count, 3)
+    }
+
+    func testMeshWidthInvalidWhenPassed() {
+        let org = SeedTemplate.agenticMesh(width: 3)
+        let issues = OrgValidator.validate(
+            org: org,
+            runners: SeedTemplate.defaultRunners(),
+            meshWidth: 1
+        )
+        XCTAssertTrue(issues.contains { if case .meshWidthInvalid(1) = $0 { return true }; return false })
     }
 
     func testEmptyOrgShortCircuitsWithoutOtherIssues() {

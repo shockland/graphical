@@ -67,7 +67,7 @@ final class ProjectSession {
             project = try yamlStore.load(from: url)
             created = false
         } else {
-            project = try yamlStore.createProject(at: url, seedTemplate: true)
+            project = try yamlStore.createProject(at: url, seed: .agenticMesh)
             created = true
         }
         if let project {
@@ -80,13 +80,39 @@ final class ProjectSession {
     }
 
     func create(at url: URL) throws {
-        project = try yamlStore.createProject(at: url, seedTemplate: true)
+        project = try yamlStore.createProject(at: url, seed: .agenticMesh)
         if let project {
             layout = try yamlStore.loadLayout(projectRoot: project.root, org: project.org)
         }
         goalDraft = project.map { GoalSource.loadDraft(from: $0, store: yamlStore) } ?? ""
         revalidate()
         captureSnapshot()
+    }
+
+    /// Re-seeds the org as an agentic mesh with `width` lanes and regenerates layout.
+    /// Preserves the current runner binding when possible (coding-tool setup rebinds next).
+    func reseedAgenticMesh(width: Int) {
+        guard var project else { return }
+        let clamped = YAMLStore.clampedMeshWidth(width)
+        let runnerName = project.org.nodes.first?.runner
+            ?? project.runners.runners.keys.sorted().first
+            ?? "echo_fixture"
+        let kind = project.runners.runners[runnerName]?.kind
+        project.config.meshWidth = clamped
+        project.org = SeedTemplate.agenticMesh(
+            width: clamped,
+            runnerName: runnerName,
+            agentKind: kind
+        )
+        self.project = project
+        layout = CanvasLayout.autoLayout(org: project.org)
+        revalidate()
+    }
+
+    func setParallelFanOut(_ enabled: Bool) {
+        guard var project else { return }
+        project.config.parallelFanOut = enabled
+        self.project = project
     }
 
     @discardableResult
@@ -106,7 +132,11 @@ final class ProjectSession {
             validationIssues = []
             return
         }
-        validationIssues = OrgValidator.validate(org: project.org, runners: project.runners)
+        validationIssues = OrgValidator.validate(
+            org: project.org,
+            runners: project.runners,
+            meshWidth: project.config.meshWidth
+        )
     }
 
     func updateOrg(_ org: OrgGraph) {
@@ -182,6 +212,15 @@ final class ProjectSession {
     func replaceNode(_ node: OrgNode) {
         guard let project else { return }
         applyOrg(OrgEditing.replaceNode(node, in: project.org))
+    }
+
+    /// Mirrors the source node's coding tool + model onto other nodes with the same role.
+    @discardableResult
+    func mirrorAgentAndModel(from sourceId: String) -> Int {
+        guard let project else { return 0 }
+        let result = OrgEditing.mirrorAgentAndModel(from: sourceId, in: project.org)
+        applyOrg(result.org)
+        return result.updatedCount
     }
 
     @discardableResult

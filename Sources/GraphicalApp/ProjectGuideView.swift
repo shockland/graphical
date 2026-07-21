@@ -187,13 +187,13 @@ final class ProjectGuideView: NSView {
     private func explanation(for action: Action) -> String {
         switch action {
         case .setGoal:
-            return "Describe what Planner, Implementer, and Reviewer should accomplish."
+            return "Describe what the mesh should accomplish across planner lanes and implementer."
         case .chooseTool:
             return "Choose a coding tool that every step can use."
         case .fixWorkflow:
-            return "Fix the first issue so Planner → Implementer → Reviewer can run in order."
+            return "Fix the first issue so fan-out lanes can join and reach the implementer."
         case .run:
-            return "Run once when you’re ready. You’ll pause after Planner to approve the plan."
+            return "Run once when you’re ready. You’ll pause after the Auditor to approve the plan."
         }
     }
 

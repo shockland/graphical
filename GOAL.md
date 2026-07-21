@@ -1,1 +1,1 @@
-the zoom in /out doesn’t work well. Zooming out is mostly fine, but zooming in is buggy
+The app should allow users to define planners, and then pass the task/context down through sub nodes (interpreters, auditors, implementer). Each planner should have its own model and agent defined, come up with a plan and then the interpreters idenfifies the goals of the plan, the auditor combibes all the plans into one solid succesffuly plan and then the implementr(single instance) completes the task.

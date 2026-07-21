@@ -273,8 +273,10 @@ final class AppModel {
     }
 
     @discardableResult
-    func completeSetup(goal: String, presetID: String) -> Bool {
+    func completeSetup(goal: String, meshWidth: Int, parallelFanOut: Bool, presetID: String) -> Bool {
         goalDraft = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        projectSession.reseedAgenticMesh(width: meshWidth)
+        projectSession.setParallelFanOut(parallelFanOut)
         guard applyAgentPreset(presetID), saveProject(), let project else {
             return false
         }
@@ -296,8 +298,9 @@ final class AppModel {
         selectedEdgeId = nil
         shouldFitCanvas = true
         shouldCenterSelection = true
+        let lanes = project.config.meshWidth
         statusMessage =
-            "Workflow ready — run Planner → Implementer → Reviewer when you’re ready"
+            "Mesh ready — \(lanes) planner lanes → interpreters → auditor → implementer"
         errorMessage = nil
         notify()
         return true
@@ -547,6 +550,20 @@ final class AppModel {
     func replaceNode(_ node: OrgNode) {
         projectSession.replaceNode(node)
         notify()
+    }
+
+    @discardableResult
+    func mirrorAgentAndModel(from sourceId: String) -> Int {
+        let updated = projectSession.mirrorAgentAndModel(from: sourceId)
+        if updated > 0 {
+            let role = project?.org.node(id: sourceId)?.role ?? "steps"
+            statusMessage = "Mirrored coding tool & model to \(updated) other \(role) step\(updated == 1 ? "" : "s")"
+            errorMessage = nil
+        } else {
+            statusMessage = "Other steps of this type already match"
+        }
+        notify()
+        return updated
     }
 
     func deleteNode(id: String) {

@@ -7,6 +7,11 @@ public enum OrgValidationIssue: Equatable, Sendable, Identifiable {
     case routerWithoutTargets(edgeId: String)
     case routerTargetUnknown(edgeId: String, target: String)
     case fixedEdgeMissingTo(edgeId: String)
+    case fanOutWithoutTargets(edgeId: String)
+    case fanOutTargetUnknown(edgeId: String, target: String)
+    case fanOutTooLarge(edgeId: String, count: Int, max: Int)
+    case joinEdgeMissingTo(edgeId: String)
+    case meshWidthInvalid(Int)
     case duplicateNodeId(String)
     case unknownRunner(nodeId: String, runner: String)
     case maxIterationsInvalid(nodeId: String)
@@ -51,6 +56,14 @@ public enum OrgValidationIssue: Equatable, Sendable, Identifiable {
             return edgeId
         case .routerFanOutTooLarge(let edgeId, _, _):
             return edgeId
+        case .fanOutWithoutTargets(let edgeId):
+            return edgeId
+        case .fanOutTargetUnknown(let edgeId, _):
+            return edgeId
+        case .fanOutTooLarge(let edgeId, _, _):
+            return edgeId
+        case .joinEdgeMissingTo(let edgeId):
+            return edgeId
         default:
             return nil
         }
@@ -70,6 +83,16 @@ public enum OrgValidationIssue: Equatable, Sendable, Identifiable {
             return "Router edge '\(edgeId)' allowlists unknown target '\(target)'"
         case .fixedEdgeMissingTo(let edgeId):
             return "Fixed edge '\(edgeId)' is missing 'to'"
+        case .fanOutWithoutTargets(let edgeId):
+            return "Fan-out edge '\(edgeId)' has no targets"
+        case .fanOutTargetUnknown(let edgeId, let target):
+            return "Fan-out edge '\(edgeId)' targets unknown node '\(target)'"
+        case .fanOutTooLarge(let edgeId, let count, let max):
+            return "Fan-out edge '\(edgeId)' has \(count) targets (max \(max))"
+        case .joinEdgeMissingTo(let edgeId):
+            return "Join edge '\(edgeId)' is missing 'to'"
+        case .meshWidthInvalid(let width):
+            return "meshWidth \(width) is out of range (2…\(OrgValidator.maxMeshWidth))"
         case .duplicateNodeId(let id):
             return "Duplicate node id '\(id)'"
         case .unknownRunner(let nodeId, let runner):
@@ -88,13 +111,23 @@ public enum OrgValidationIssue: Equatable, Sendable, Identifiable {
 
 public enum OrgValidator {
     public static let maxRouterTargets = 8
+    public static let maxMeshWidth = 8
+    public static let minMeshWidth = 2
 
-    public static func validate(org: OrgGraph, runners: RunnersConfig) -> [OrgValidationIssue] {
+    public static func validate(
+        org: OrgGraph,
+        runners: RunnersConfig,
+        meshWidth: Int? = nil
+    ) -> [OrgValidationIssue] {
         var issues: [OrgValidationIssue] = []
 
         if org.nodes.isEmpty {
             issues.append(.emptyOrg)
             return issues
+        }
+
+        if let meshWidth, (meshWidth < minMeshWidth || meshWidth > maxMeshWidth) {
+            issues.append(.meshWidthInvalid(meshWidth))
         }
 
         var seen = Set<String>()
@@ -135,6 +168,14 @@ public enum OrgValidator {
                 if !nodeIds.contains(to) {
                     issues.append(.danglingEdge(edgeId: edge.id, nodeId: to))
                 }
+            case .join:
+                guard let to = edge.to else {
+                    issues.append(.joinEdgeMissingTo(edgeId: edge.id))
+                    continue
+                }
+                if !nodeIds.contains(to) {
+                    issues.append(.danglingEdge(edgeId: edge.id, nodeId: to))
+                }
             case .router:
                 if edge.targets.isEmpty {
                     issues.append(.routerWithoutTargets(edgeId: edge.id))
@@ -151,6 +192,24 @@ public enum OrgValidator {
                 for target in edge.targets {
                     if !nodeIds.contains(target) {
                         issues.append(.routerTargetUnknown(edgeId: edge.id, target: target))
+                    }
+                }
+            case .fanOut:
+                if edge.targets.isEmpty {
+                    issues.append(.fanOutWithoutTargets(edgeId: edge.id))
+                }
+                if edge.targets.count > maxMeshWidth {
+                    issues.append(
+                        .fanOutTooLarge(
+                            edgeId: edge.id,
+                            count: edge.targets.count,
+                            max: maxMeshWidth
+                        )
+                    )
+                }
+                for target in edge.targets {
+                    if !nodeIds.contains(target) {
+                        issues.append(.fanOutTargetUnknown(edgeId: edge.id, target: target))
                     }
                 }
             }

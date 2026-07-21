@@ -5,6 +5,7 @@ final class SetupSessionTests: XCTestCase {
     func testFirstRunRequiresGoalBeforeContinue() {
         var session = SetupSession(mode: .firstRun, goal: "", selectedPresetID: "demo")
         XCTAssertEqual(session.currentStep, .goal)
+        XCTAssertEqual(session.meshWidth, 3)
         XCTAssertFalse(session.canContinue)
         XCTAssertFalse(session.advance())
         XCTAssertFalse(session.isReadyToFinish)
@@ -13,6 +14,18 @@ final class SetupSessionTests: XCTestCase {
         XCTAssertTrue(session.canContinue)
         XCTAssertTrue(session.advance())
         XCTAssertEqual(session.currentStep, .codingTool)
+    }
+
+    func testMeshWidthClampsToValidatorBounds() {
+        let low = SetupSession(mode: .firstRun, meshWidth: 1)
+        XCTAssertEqual(low.meshWidth, 2)
+        let high = SetupSession(mode: .firstRun, meshWidth: 99)
+        XCTAssertEqual(high.meshWidth, 8)
+    }
+
+    func testParallelFanOutDefaultsOn() {
+        let session = SetupSession(mode: .firstRun)
+        XCTAssertTrue(session.parallelFanOut)
     }
 
     func testFirstRunIsTwoStepsAndFinishesOnCodingTool() {

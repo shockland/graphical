@@ -8,6 +8,7 @@ Native macOS app for **graph engineering**: organize agent nodes (roles + models
 - CLI-first pluggable agents (`runners.yaml`: command + kind + default model)
 - Loop-per-node with artifact + shell + `router_next` done-checks
 - Fixed edges + planner-router nodes, with optional `on: reject` edges for rework loops
+- Fan-out / join edges for agentic mesh (AND-activate lanes, barrier join); lanes run sequentially in MVP
 - Opt-in edge approval gates
 - Local SQLite traces + handoff inspector
 
@@ -79,10 +80,10 @@ Per-node `runner` / `model` and `runners.yaml` often differ by machine (Cursor v
 
 ## App flow
 
-1. **Create / Open** a project folder — Create (or Open of a folder without `.graphical`) opens a setup sheet: goal → coding tool, then lands on the **Workflow** canvas (Planner → Implementer → Reviewer). Setup does not auto-start a run.
+1. **Create / Open** a project folder — Create (or Open of a folder without `.graphical`) opens a setup sheet: goal + planner-lane count → coding tool, then lands on the **Workflow** canvas seeded as an agentic mesh (entry fan-out → Planner→Interpreter lanes → join → Auditor → Implementer → Report). Setup does not auto-start a run.
 2. Edit **Workflow** nodes and edges (Save writes YAML), or press **Run workflow** from the Project Guide when ready
 3. Choose a **coding tool** via Project Guide or **Agents → Set up coding tool…** (preset wizard with install detection). The Agents tab still exposes raw CLI templates for power users. Cursor presets include `--output-format stream-json --stream-partial-output` so the Run console can show incremental agent text; existing project `runners.yaml` entries need those flags added under `-p` to get the same live feedback (durable traces stay redacted unless `traceCLIOutput` is enabled).
-4. **Run** with a goal; approve the gated Planner → Implementer handoff (first-run tips explain approval vs reject edges)
+4. **Run** with a goal; approve the gated Auditor → Implementer handoff (first-run tips explain approval vs reject edges)
 5. Inspect **History** and export JSON
 
 ## Goal source
@@ -115,6 +116,7 @@ Graphical runs arbitrary local CLI agents and shell commands on your behalf. Kee
 - **The trace database lives at** `~/Library/Application Support/Graphical/graphical.sqlite` and is not encrypted; exported trace JSON carries the same caveats.
 - **Shell done-checks run with a minimal environment**, not your full shell environment — this limits (but does not eliminate) what a check command can read.
 - **Runner templates execute real subprocesses** (e.g. `claude`, `agent`, or arbitrary commands from `runners.yaml`). Review `runners.yaml` and node instructions before running a project you didn't author.
+- **Mesh fan-out runs in parallel by default** (`project.yaml` `parallelFanOut: true`) — lane heads share a process cohort; turn it off to drain lanes one-by-one. Changing `meshWidth` requires re-seeding the org (runtime does not expand lanes).
 
 ## Domain language
 
@@ -125,4 +127,8 @@ Graphical runs arbitrary local CLI agents and shell commands on your behalf. Kee
 | Node loop | Invoke CLI until done-checks pass or budget hits |
 | Handoff contract | summary + artifacts + checks (+ router next) — not full transcripts |
 | Reject edge | `on: reject` edge a node can trigger via `reject.json` to send work back instead of advancing |
+| Fan-out edge | `type: fan_out` — after success, activate **all** `targets` (AND), unlike router (XOR) |
+| Join edge | `type: join` — destination runs only after all inbound join predecessors succeed; multi-inbound packet |
+| Mesh width | `project.yaml` `meshWidth` used when seeding `SeedTemplate.agenticMesh`; static after seed |
+| Parallel fan-out | `project.yaml` `parallelFanOut` (default true) — run fan-out lane heads concurrently |
 | Goal source | `GOAL.md`, kept in sync with `project.yaml`'s `goal` field on Save |

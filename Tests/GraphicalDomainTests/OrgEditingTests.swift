@@ -43,4 +43,27 @@ final class OrgEditingTests: XCTestCase {
         XCTAssertEqual(result.org.edges[0].type, .fixed)
         XCTAssertEqual(result.org.edges[0].to, "b")
     }
+
+    func testMirrorAgentAndModelCopiesToSameRoleOnly() {
+        var org = SeedTemplate.agenticMesh(width: 2)
+        guard let plannerIndex = org.nodes.firstIndex(where: { $0.id == "planner-1" }) else {
+            return XCTFail("missing planner-1")
+        }
+        org.nodes[plannerIndex].runner = "cursor_agent"
+        org.nodes[plannerIndex].model = "cursor-grok-4.5-high"
+
+        let result = OrgEditing.mirrorAgentAndModel(from: "planner-1", in: org)
+        XCTAssertEqual(result.updatedCount, 1)
+        XCTAssertEqual(result.org.node(id: "planner-2")?.runner, "cursor_agent")
+        XCTAssertEqual(result.org.node(id: "planner-2")?.model, "cursor-grok-4.5-high")
+        // Interpreters keep their own binding.
+        XCTAssertNotEqual(result.org.node(id: "interpreter-1")?.model, "cursor-grok-4.5-high")
+    }
+
+    func testMirrorAgentAndModelNoOpsWhenAlreadyMatched() {
+        let org = SeedTemplate.agenticMesh(width: 2)
+        let result = OrgEditing.mirrorAgentAndModel(from: "planner-1", in: org)
+        XCTAssertEqual(result.updatedCount, 0)
+        XCTAssertEqual(result.org, org)
+    }
 }

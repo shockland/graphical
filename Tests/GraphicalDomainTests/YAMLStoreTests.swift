@@ -9,10 +9,14 @@ final class YAMLStoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let created = try store.createProject(at: root, name: "Demo", seedTemplate: true)
+        let created = try store.createProject(at: root, name: "Demo", seed: .agenticMesh)
         XCTAssertEqual(created.config.name, "Demo")
-        XCTAssertEqual(created.org.nodes.count, 3)
-        XCTAssertEqual(created.org.entry, "planner")
+        XCTAssertEqual(created.config.meshWidth, 3)
+        // entry + 3×(planner,interpreter) + auditor + implementer + report = 10
+        XCTAssertEqual(created.org.nodes.count, 10)
+        XCTAssertEqual(created.org.entry, "entry")
+        XCTAssertTrue(created.org.edges.contains { $0.type == .fanOut })
+        XCTAssertTrue(created.org.edges.contains { $0.type == .join })
         XCTAssertNotNil(created.runners.runners["echo_fixture"])
 
         let loaded = try store.load(from: root)
@@ -21,6 +25,19 @@ final class YAMLStoreTests: XCTestCase {
         let yaml = try store.encodeToString(created.org)
         let decoded: OrgGraph = try store.decodeFromString(OrgGraph.self, string: yaml)
         XCTAssertEqual(decoded.nodes.map(\.id), created.org.nodes.map(\.id))
+    }
+
+    func testCreateProjectHonorsMeshWidth() throws {
+        let store = YAMLStore()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graphical-mesh-w-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let created = try store.createProject(at: root, name: "Wide", seed: .agenticMesh, meshWidth: 4)
+        XCTAssertEqual(created.config.meshWidth, 4)
+        XCTAssertEqual(created.org.nodes.filter { $0.id.hasPrefix("planner-") }.count, 4)
+        XCTAssertEqual(created.org.nodes.filter { $0.id.hasPrefix("interpreter-") }.count, 4)
     }
 
     func testHandoffFilterWithholds() {
@@ -185,7 +202,7 @@ final class YAMLStoreTests: XCTestCase {
 
         let store = YAMLStore()
         XCTAssertThrowsError(
-            try store.createProject(at: root, name: "Escape", seedTemplate: false, goalFile: "../escape.md")
+            try store.createProject(at: root, name: "Escape", seed: .none, goalFile: "../escape.md")
         ) { error in
             XCTAssertEqual(error as? YAMLStoreError, .unsafeGoalFile("../escape.md"))
         }
@@ -200,7 +217,7 @@ final class YAMLStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = YAMLStore()
-        let project = try store.createProject(at: root, name: "GoalText", seedTemplate: false)
+        let project = try store.createProject(at: root, name: "GoalText", seed: .none)
 
         let goalText = try store.loadGoalText(projectRoot: root, config: project.config)
         XCTAssertEqual(project.config.goal, "")
@@ -218,7 +235,7 @@ final class YAMLStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = YAMLStore()
-        let project = try store.createProject(at: root, name: "GoalWrite", seedTemplate: false)
+        let project = try store.createProject(at: root, name: "GoalWrite", seed: .none)
 
         try store.writeGoalText("Ship the feature end to end.", projectRoot: root, config: project.config)
         let reloaded = try store.loadGoalText(projectRoot: root, config: project.config)
@@ -309,7 +326,7 @@ final class YAMLStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = YAMLStore()
-        _ = try store.createProject(at: root, name: "RT", seedTemplate: true)
+        _ = try store.createProject(at: root, name: "RT", seed: .agenticMesh)
         let runners = RunnersConfig(runners: [
             "cursor_agent": SeedTemplate.defaultRunners().runners["cursor_agent"]!
         ])

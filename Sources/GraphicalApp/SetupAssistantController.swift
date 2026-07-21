@@ -1,11 +1,14 @@
 import AppKit
 import GraphicalCLI
+import GraphicalDomain
 
 @MainActor
 protocol SetupAssistantControllerDelegate: AnyObject {
     func setupAssistant(
         _ controller: SetupAssistantController,
         finishWithGoal goal: String,
+        meshWidth: Int,
+        parallelFanOut: Bool,
         presetID: String
     ) -> Bool
     func setupAssistant(
@@ -27,6 +30,12 @@ final class SetupAssistantController: NSWindowController, NSTextViewDelegate {
     private let stepLabel = AppKitText.label("", style: .muted)
     private let pageHost = NSView()
     private let goalTextView = NSTextView()
+    private let meshWidthPopup = AppKitText.popup()
+    private let parallelFanOutCheckbox = NSButton(
+        checkboxWithTitle: "Run planner lanes in parallel",
+        target: nil,
+        action: nil
+    )
     private let presetPicker = AgentPresetPickerView()
     private let backButton = PrimaryButton(title: "Back", style: .secondary, target: nil, action: nil)
     private let useAnywayButton = PrimaryButton(title: "Use anyway", style: .secondary, target: nil, action: nil)
@@ -151,6 +160,8 @@ final class SetupAssistantController: NSWindowController, NSTextViewDelegate {
         )
 
         configureGoalEditor()
+        configureMeshWidthPopup()
+        configureParallelFanOutCheckbox()
         presetPicker.onSelectPreset = { [weak self] presetID in
             self?.session.selectedPresetID = presetID
             self?.clearInlineError()
@@ -177,6 +188,44 @@ final class SetupAssistantController: NSWindowController, NSTextViewDelegate {
         goalTextView.setAccessibilityHelp(
             "Describe what should be true when the work is finished."
         )
+    }
+
+    private func configureMeshWidthPopup() {
+        meshWidthPopup.removeAllItems()
+        for width in OrgValidator.minMeshWidth...OrgValidator.maxMeshWidth {
+            meshWidthPopup.addItem(withTitle: "\(width) planner lanes")
+            meshWidthPopup.lastItem?.tag = width
+        }
+        meshWidthPopup.selectItem(withTag: session.meshWidth)
+        meshWidthPopup.target = self
+        meshWidthPopup.action = #selector(meshWidthChanged)
+        meshWidthPopup.setAccessibilityLabel("Number of planner lanes")
+        meshWidthPopup.setAccessibilityHelp(
+            "Each lane is Planner → Interpreter; lanes fan out then join at the Auditor."
+        )
+    }
+
+    @objc private func meshWidthChanged() {
+        let tag = meshWidthPopup.selectedTag()
+        session.meshWidth = tag >= OrgValidator.minMeshWidth ? tag : 3
+        clearInlineError()
+    }
+
+    private func configureParallelFanOutCheckbox() {
+        parallelFanOutCheckbox.target = self
+        parallelFanOutCheckbox.action = #selector(parallelFanOutChanged)
+        parallelFanOutCheckbox.state = session.parallelFanOut ? .on : .off
+        parallelFanOutCheckbox.font = Theme.bodyFont()
+        parallelFanOutCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        parallelFanOutCheckbox.setAccessibilityLabel("Run planner lanes in parallel")
+        parallelFanOutCheckbox.setAccessibilityHelp(
+            "When on, fan-out launches every planner lane at once. When off, lanes run one after another."
+        )
+    }
+
+    @objc private func parallelFanOutChanged() {
+        session.parallelFanOut = parallelFanOutCheckbox.state == .on
+        clearInlineError()
     }
 
     func textDidChange(_ notification: Notification) {
@@ -221,14 +270,27 @@ final class SetupAssistantController: NSWindowController, NSTextViewDelegate {
             style: .title
         )
         let detail = AppKitText.label(
-            "Describe the result you want. Planner, Implementer, and Reviewer will share this goal.",
+            "Describe the result you want. The mesh (planners → interpreters → auditor → implementer) shares this goal.",
             style: .muted
         )
-        detail.maximumNumberOfLines = 2
+        detail.maximumNumberOfLines = 3
 
         let scroll = ThemedScrollView()
         scroll.documentView = goalTextView
-        scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
+        scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
+
+        let meshLabel = AppKitText.label("Planner lanes", style: .body)
+        let meshDetail = AppKitText.label(
+            "Fan-out activates each Planner→Interpreter lane, then joins at the Auditor.",
+            style: .caption
+        )
+        meshDetail.textColor = Theme.muted
+        meshDetail.maximumNumberOfLines = 2
+        let meshRow = NSStackView(views: [meshLabel, meshWidthPopup])
+        meshRow.orientation = .horizontal
+        meshRow.alignment = .centerY
+        meshRow.spacing = 12
+        meshLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
         let examples = AppKitText.label(
             "Examples for inspiration only: “The import completes without duplicate records.”  “Customers can export invoices as PDF.”",
@@ -238,12 +300,14 @@ final class SetupAssistantController: NSWindowController, NSTextViewDelegate {
         examples.maximumNumberOfLines = 3
         examples.lineBreakMode = .byWordWrapping
 
-        return pageStack([heading, detail, scroll, examples])
+        return pageStack([
+            heading, detail, scroll, meshRow, meshDetail, parallelFanOutCheckbox, examples
+        ])
     }
 
     private func makeCodingToolPage() -> NSView {
         let detail = AppKitText.label(
-            "Pick the coding tool for Planner → Implementer → Reviewer. Demo works without installing anything.",
+            "Pick the coding tool for every mesh node. Demo works without installing anything.",
             style: .muted
         )
         detail.maximumNumberOfLines = 3
@@ -389,6 +453,8 @@ final class SetupAssistantController: NSWindowController, NSTextViewDelegate {
         if delegate?.setupAssistant(
             self,
             finishWithGoal: session.goal,
+            meshWidth: session.meshWidth,
+            parallelFanOut: session.parallelFanOut,
             presetID: presetID
         ) == true {
             dismiss()

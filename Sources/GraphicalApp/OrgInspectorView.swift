@@ -7,6 +7,7 @@ protocol OrgInspectorViewDelegate: AnyObject {
     func orgInspector(_ inspector: OrgInspectorView, didUpdateNode node: OrgNode)
     func orgInspector(_ inspector: OrgInspectorView, didDeleteNode id: String)
     func orgInspector(_ inspector: OrgInspectorView, didMakeEntry id: String)
+    func orgInspector(_ inspector: OrgInspectorView, didMirrorAgentAndModelFrom sourceId: String)
     func orgInspector(_ inspector: OrgInspectorView, didUpdateEdge edge: OrgEdge)
     func orgInspector(_ inspector: OrgInspectorView, didDeleteEdge id: String)
     func orgInspector(_ inspector: OrgInspectorView, didUpdateProjectName name: String)
@@ -140,6 +141,23 @@ final class OrgInspectorView: NSView {
             addStacked(FormField(title: "Name or role", control: roleField))
             addStacked(FormField(title: "Coding tool", control: agentPopup))
             addStacked(FormField(title: "Model", control: modelPopup))
+            let peerCount = org.nodes.filter { $0.role == node.role && $0.id != node.id }.count
+            if peerCount > 0 {
+                let mirrorTitle = peerCount == 1
+                    ? "Mirror tool & model to other \(node.role)"
+                    : "Mirror tool & model to \(peerCount) other \(node.role)s"
+                let mirror = PrimaryButton(
+                    title: mirrorTitle,
+                    style: .secondary,
+                    target: self,
+                    action: #selector(mirrorAgentAndModel)
+                )
+                mirror.setAccessibilityLabel(mirrorTitle)
+                mirror.setAccessibilityHelp(
+                    "Copy this step’s coding tool and model onto every other step with the same role."
+                )
+                addStacked(mirror)
+            }
             addStacked(FormField(title: "Retry limit", control: maxIterField))
             addStacked(FormField(title: "Instructions", control: wrapTextView(instructionsView, height: 100)))
             addStacked(FormField(title: "Required output files (comma-separated)", control: artifactsField))
@@ -331,8 +349,13 @@ final class OrgInspectorView: NSView {
         fromPopup.selectItem(withTitle: edge.from)
 
         typePopup.removeAllItems()
-        typePopup.addItems(withTitles: ["Next step", "Decision"])
-        typePopup.selectItem(at: edge.type == .router ? 1 : 0)
+        typePopup.addItems(withTitles: ["Next step", "Decision", "Fan-out", "Join"])
+        switch edge.type {
+        case .fixed: typePopup.selectItem(at: 0)
+        case .router: typePopup.selectItem(at: 1)
+        case .fanOut: typePopup.selectItem(at: 2)
+        case .join: typePopup.selectItem(at: 3)
+        }
         typePopup.target = self
         typePopup.action = #selector(edgeTypeChanged)
 
@@ -357,9 +380,10 @@ final class OrgInspectorView: NSView {
     }
 
     private func updateEdgeFieldVisibility() {
-        let isRouter = typePopup.indexOfSelectedItem == 1
-        toPopup.superview?.isHidden = isRouter
-        targetsField.superview?.isHidden = !isRouter
+        let index = typePopup.indexOfSelectedItem
+        let usesTargets = index == 1 || index == 2 // Decision (router) or Fan-out
+        toPopup.superview?.isHidden = usesTargets
+        targetsField.superview?.isHidden = !usesTargets
     }
 
     @objc private func projectFieldsChanged() {
@@ -367,7 +391,21 @@ final class OrgInspectorView: NSView {
     }
 
     @objc private func applyNode() {
-        guard let existing = currentNode else { return }
+        guard let node = makeNodeFromFields() else { return }
+        currentNode = node
+        delegate?.orgInspector(self, didUpdateNode: node)
+    }
+
+    @objc private func mirrorAgentAndModel() {
+        // Persist the inspector’s current tool/model on this step first, then copy by role.
+        guard let node = makeNodeFromFields() else { return }
+        currentNode = node
+        delegate?.orgInspector(self, didUpdateNode: node)
+        delegate?.orgInspector(self, didMirrorAgentAndModelFrom: node.id)
+    }
+
+    private func makeNodeFromFields() -> OrgNode? {
+        guard let existing = currentNode else { return nil }
         let artifacts = artifactsField.stringValue
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -377,16 +415,15 @@ final class OrgInspectorView: NSView {
             artifactPaths: artifacts,
             includeRouterNext: routerNextButton.state == .on
         )
-        let node = OrgNode(
+        return OrgNode(
             id: nodeIdField.stringValue,
             role: roleField.stringValue,
-            runner: agentPopup.titleOfSelectedItem ?? currentNode?.runner ?? "",
+            runner: agentPopup.titleOfSelectedItem ?? existing.runner,
             model: selectedModelSlug(),
             instructions: instructionsView.string,
             done: done,
             maxIterations: Int(maxIterField.stringValue) ?? 3
         )
-        delegate?.orgInspector(self, didUpdateNode: node)
     }
 
     @objc private func makeEntry() {
@@ -407,16 +444,29 @@ final class OrgInspectorView: NSView {
     @objc private func applyEdge() {
         guard var edge = currentEdge else { return }
         edge.from = fromPopup.titleOfSelectedItem ?? edge.from
-        edge.type = typePopup.indexOfSelectedItem == 1 ? .router : .fixed
-        if edge.type == .fixed {
-            edge.to = toPopup.titleOfSelectedItem
-            edge.targets = []
-        } else {
+        switch typePopup.indexOfSelectedItem {
+        case 1:
+            edge.type = .router
             edge.to = nil
             edge.targets = targetsField.stringValue
                 .split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
+        case 2:
+            edge.type = .fanOut
+            edge.to = nil
+            edge.targets = targetsField.stringValue
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        case 3:
+            edge.type = .join
+            edge.to = toPopup.titleOfSelectedItem
+            edge.targets = []
+        default:
+            edge.type = .fixed
+            edge.to = toPopup.titleOfSelectedItem
+            edge.targets = []
         }
         switch onPopup.indexOfSelectedItem {
         case 0: edge.on = .always

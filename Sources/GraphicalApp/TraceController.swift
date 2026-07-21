@@ -197,7 +197,7 @@ final class TraceController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             return Theme.danger
         case .runCancelled, .cliFinished:
             return Theme.muted
-        case .checksEvaluated, .handoffBuilt, .routed, .retry, .escalate:
+        case .checksEvaluated, .handoffBuilt, .routed, .joinReady, .retry, .escalate:
             return Theme.text
         }
     }

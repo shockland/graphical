@@ -1,184 +1,203 @@
 nodes:
-- id: intake
-  role: Intake
+- id: entry
+  role: Coordinator
   runner: cursor_agent
-  model: cursor-grok-4.5-medium
-  instructions: "You are Intake. Clarify the goal into a short brief the rest of the
-    org can follow.\nWrite brief.md into the node_artifacts directory from the working
-    packet (not the repo root).\nKeep brief.md to 3\u20136 bullets: goal, constraints,
-    out-of-scope, and success signal.\nAlso write summary.txt with one sentence.\nDo
-    not edit application source code.\n"
+  instructions: 'You are the mesh coordinator. Confirm the goal is ready, then write
+    summary.txt.
+
+    Fan-out will activate all planner lanes.'
   done:
     all_of:
-    - artifact: brief.md
-  max_iterations: 2
-- id: planner
+    - artifact: summary.txt
+  max_iterations: 1
+  timeout_seconds: 30
+- id: planner-1
   role: Planner
   runner: cursor_agent
-  model: cursor-grok-4.5-medium
-  instructions: "You are the Planner. Read brief.md from inbound handoff artifacts
-    if present, plus the goal.\nProduce a concrete implementation plan in plan.md
-    (node_artifacts, not repo root).\nKeep plan.md to 5\u201310 short bullets naming
-    specific files/areas under Sources/ or Tests/.\nThen write next.json in that same
-    directory choosing the next hop:\n- researcher \u2014 if the goal needs exploration,
-    API/docs lookup, or uncertainty remains\n- implementer \u2014 if the plan is concrete
-    enough to start coding\nExample: {\"node_id\":\"implementer\",\"reason\":\"Plan
-    ready for implementation\"}\nAlso write summary.txt with one sentence.\nDo not
-    edit application source code \u2014 planning only.\n"
+  model: cursor-grok-4.5-high
+  instructions: 'You are Planner lane 1 of 5. Produce plan.md with your approach to
+    the goal.
+
+    Write summary.txt with a one-sentence handoff for your interpreter.'
   done:
     all_of:
     - artifact: plan.md
-    - router_next: true
-  max_iterations: 2
-- id: researcher
-  role: Researcher
+    - artifact: summary.txt
+  max_iterations: 3
+- id: interpreter-1
+  role: Interpreter
   runner: cursor_agent
-  model: cursor-grok-4.5-medium
-  instructions: "You are the Researcher. Read plan.md / brief.md from inbound handoff
-    artifacts if present.\nExplore the repo (and only the repo) to answer open questions
-    from the plan.\nWrite research.md into node_artifacts with findings, file pointers,
-    and risks.\nAlso write summary.txt with one sentence for the Implementer.\nDo
-    not implement the goal \u2014 research only.\n"
+  instructions: 'You are Interpreter lane 1 of 5. Read plan.md from inbound artifacts.
+
+    Produce interpretation.md refining the attack plan for the auditor.
+
+    Write summary.txt for join handoff.'
   done:
     all_of:
-    - artifact: research.md
-  max_iterations: 2
+    - artifact: interpretation.md
+    - artifact: summary.txt
+  max_iterations: 3
+  timeout_seconds: 30
+- id: planner-2
+  role: Planner
+  runner: cursor_agent
+  instructions: 'You are Planner lane 2 of 5. Produce plan.md with your approach to
+    the goal.
+
+    Write summary.txt with a one-sentence handoff for your interpreter.'
+  done:
+    all_of:
+    - artifact: plan.md
+    - artifact: summary.txt
+  max_iterations: 3
+  timeout_seconds: 30
+- id: interpreter-2
+  role: Interpreter
+  runner: cursor_agent
+  instructions: 'You are Interpreter lane 2 of 5. Read plan.md from inbound artifacts.
+
+    Produce interpretation.md refining the attack plan for the auditor.
+
+    Write summary.txt for join handoff.'
+  done:
+    all_of:
+    - artifact: interpretation.md
+    - artifact: summary.txt
+  max_iterations: 3
+  timeout_seconds: 30
+- id: planner-3
+  role: Planner
+  runner: cursor_agent
+  instructions: 'You are Planner lane 3 of 5. Produce plan.md with your approach to
+    the goal.
+
+    Write summary.txt with a one-sentence handoff for your interpreter.'
+  done:
+    all_of:
+    - artifact: plan.md
+    - artifact: summary.txt
+  max_iterations: 3
+  timeout_seconds: 30
+- id: interpreter-3
+  role: Interpreter
+  runner: cursor_agent
+  instructions: 'You are Interpreter lane 3 of 5. Read plan.md from inbound artifacts.
+
+    Produce interpretation.md refining the attack plan for the auditor.
+
+    Write summary.txt for join handoff.'
+  done:
+    all_of:
+    - artifact: interpretation.md
+    - artifact: summary.txt
+  max_iterations: 3
+  timeout_seconds: 30
+- id: planner-4
+  role: Planner
+  runner: cursor_agent
+  instructions: 'You are Planner lane 4 of 5. Produce plan.md with your approach to
+    the goal.
+
+    Write summary.txt with a one-sentence handoff for your interpreter.'
+  done:
+    all_of:
+    - artifact: plan.md
+    - artifact: summary.txt
+  max_iterations: 3
+  timeout_seconds: 30
+- id: interpreter-4
+  role: Interpreter
+  runner: cursor_agent
+  instructions: 'You are Interpreter lane 4 of 5. Read plan.md from inbound artifacts.
+
+    Produce interpretation.md refining the attack plan for the auditor.
+
+    Write summary.txt for join handoff.'
+  done:
+    all_of:
+    - artifact: interpretation.md
+    - artifact: summary.txt
+  max_iterations: 3
+  timeout_seconds: 30
+- id: planner-5
+  role: Planner
+  runner: cursor_agent
+  instructions: 'You are Planner lane 5 of 5. Produce plan.md with your approach to
+    the goal.
+
+    Write summary.txt with a one-sentence handoff for your interpreter.'
+  done:
+    all_of:
+    - artifact: plan.md
+    - artifact: summary.txt
+  max_iterations: 3
+  timeout_seconds: 30
+- id: interpreter-5
+  role: Interpreter
+  runner: cursor_agent
+  instructions: 'You are Interpreter lane 5 of 5. Read plan.md from inbound artifacts.
+
+    Produce interpretation.md refining the attack plan for the auditor.
+
+    Write summary.txt for join handoff.'
+  done:
+    all_of:
+    - artifact: interpretation.md
+    - artifact: summary.txt
+  max_iterations: 3
+  timeout_seconds: 30
+- id: auditor
+  role: Auditor
+  runner: cursor_agent
+  instructions: 'You are the Auditor. Review all interpreter inbound handoffs and
+    produce final-plan.md
+
+    synthesizing one approach. Write summary.txt for the implementer (final plan only).'
+  done:
+    all_of:
+    - artifact: final-plan.md
+    - artifact: summary.txt
+  max_iterations: 3
+  timeout_seconds: 30
 - id: implementer
   role: Implementer
   runner: cursor_agent
-  model: cursor-grok-4.5-medium
-  instructions: 'You are the Implementer. Read plan.md and research.md from inbound
-    handoff artifacts if present.
-
-    Implement the goal by editing application source under Sources/ and Tests/ as
-    needed.
-
-    Make focused, minimal changes that match existing code style. Do not rewrite unrelated
-    code.
-
-    When finished:
-
-    - Write implementation.md into node_artifacts listing files changed and what you
-    did
-
-    - Write summary.txt with one sentence for handoff
-
-    Done-checks require swift build to pass from the project root (four directories
-
-    above node_artifacts: cd ../../../..).
-
-    '
+  instructions: You are the Implementer. Follow the auditor's final-plan.md and produce
+    implementation.md.
   done:
     all_of:
     - artifact: implementation.md
-    - shell: cd ../../../.. && swift build
-  max_iterations: 3
-- id: verifier
-  role: Verifier
+    - shell: test -f implementation.md
+  max_iterations: 5
+  timeout_seconds: 30
+- id: report
+  role: Report
   runner: cursor_agent
-  model: cursor-grok-4.5-medium
-  instructions: "You are the Verifier. Check that the Implementer's changes match
-    the plan and actually build.\nInspect git diff / changed files and implementation.md
-    from inbound handoff artifacts.\nRun checks from the project root (four directories
-    above node_artifacts: cd ../../../..).\nWrite verify.md into node_artifacts with
-    pass/fail notes and what you checked.\nAlso write summary.txt with one sentence.\nIf
-    verification fails and rework is needed, write reject.json in node_artifacts:\n{\"reject\":
-    true, \"reason\":\"Build or plan mismatch \u2014 send back to Implementer\"}\nDo
-    not rewrite large areas of the app \u2014 verification and small fixes only.\n"
+  instructions: You are Report. Produce report.md summarizing the mesh run outcome.
   done:
     all_of:
-    - artifact: verify.md
-    - shell: cd ../../../.. && swift build
+    - artifact: report.md
   max_iterations: 2
-- id: reviewer
-  role: Reviewer
-  runner: cursor_agent
-  model: cursor-grok-4.5-high
-  instructions: 'You are the Reviewer. Inspect the verified changes for correctness,
-    style, and risk.
-
-    Read verify.md / implementation.md from inbound handoff artifacts when present.
-
-    Write review.md into node_artifacts with a short approve/reject assessment.
-
-    Also write summary.txt with one sentence.
-
-    If the work should go back for rework, write reject.json:
-
-    {"reject": true, "reason":"Review findings need another Implementer pass"}
-
-    Prefer sending major scope mistakes back via reject rather than rewriting everything
-    yourself.
-
-    Done-checks require swift build to pass from the project root (cd ../../../..).
-
-    '
-  done:
-    all_of:
-    - artifact: review.md
-    - shell: cd ../../../.. && swift build
-  max_iterations: 2
-- id: documenter
-  role: Documenter
-  runner: cursor_agent
-  model: cursor-grok-4.5-medium
-  instructions: 'You are the Documenter. After review approval, capture what changed
-    for humans.
-
-    Write changelog.md into node_artifacts with user-facing bullets (not a full git
-    log).
-
-    Optionally note follow-ups in notes.md if useful.
-
-    Also write summary.txt with one sentence.
-
-    Do not change application source unless a doc comment is strictly required.
-
-    '
-  done:
-    all_of:
-    - artifact: changelog.md
-  max_iterations: 2
-- id: releaser
-  role: Release Notes
-  runner: cursor_agent
-  model: cursor-grok-4.5-high-fast
-  instructions: "You are Release Notes. Produce a short ship-ready summary from inbound
-    changelog/review artifacts.\nWrite release.md into node_artifacts (headline +
-    3\u20135 bullets + risk/rollback line).\nAlso write summary.txt with one sentence.\nDo
-    not edit application source code.\n"
-  done:
-    all_of:
-    - artifact: release.md
-  max_iterations: 2
+  timeout_seconds: 30
 edges:
-- id: intake-to-planner
-  from: intake
-  to: planner
-  type: fixed
-  targets: []
-  on: success
-  pass:
-  - summary
-  - artifacts
-  - checks
-  requires_approval: false
-- id: planner-router
-  from: planner
-  type: router
+- id: entry-fanout
+  from: entry
+  type: fan_out
   targets:
-  - researcher
-  - implementer
+  - planner-1
+  - planner-2
+  - planner-3
+  - planner-4
+  - planner-5
   on: success
   pass:
   - summary
   - artifacts
   - checks
-  - next
   requires_approval: false
-- id: researcher-to-implementer
-  from: researcher
-  to: implementer
+- id: planner-1-to-interpreter-1
+  from: planner-1
+  to: interpreter-1
   type: fixed
   targets: []
   on: success
@@ -187,9 +206,119 @@ edges:
   - artifacts
   - checks
   requires_approval: false
-- id: implementer-to-verifier
+- id: interpreter-1-join-auditor
+  from: interpreter-1
+  to: auditor
+  type: join
+  targets: []
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  requires_approval: false
+- id: planner-2-to-interpreter-2
+  from: planner-2
+  to: interpreter-2
+  type: fixed
+  targets: []
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  requires_approval: false
+- id: interpreter-2-join-auditor
+  from: interpreter-2
+  to: auditor
+  type: join
+  targets: []
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  requires_approval: false
+- id: planner-3-to-interpreter-3
+  from: planner-3
+  to: interpreter-3
+  type: fixed
+  targets: []
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  requires_approval: false
+- id: interpreter-3-join-auditor
+  from: interpreter-3
+  to: auditor
+  type: join
+  targets: []
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  requires_approval: false
+- id: planner-4-to-interpreter-4
+  from: planner-4
+  to: interpreter-4
+  type: fixed
+  targets: []
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  requires_approval: false
+- id: interpreter-4-join-auditor
+  from: interpreter-4
+  to: auditor
+  type: join
+  targets: []
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  requires_approval: false
+- id: planner-5-to-interpreter-5
+  from: planner-5
+  to: interpreter-5
+  type: fixed
+  targets: []
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  requires_approval: false
+- id: interpreter-5-join-auditor
+  from: interpreter-5
+  to: auditor
+  type: join
+  targets: []
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  requires_approval: false
+- id: auditor-to-implementer
+  from: auditor
+  to: implementer
+  type: fixed
+  targets: []
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  requires_approval: true
+- id: implementer-to-report
   from: implementer
-  to: verifier
+  to: report
   type: fixed
   targets: []
   on: success
@@ -198,61 +327,4 @@ edges:
   - artifacts
   - checks
   requires_approval: false
-- id: verifier-to-reviewer
-  from: verifier
-  to: reviewer
-  type: fixed
-  targets: []
-  on: success
-  pass:
-  - summary
-  - artifacts
-  - checks
-  requires_approval: false
-- id: verifier-reject-to-implementer
-  from: verifier
-  to: implementer
-  type: fixed
-  targets: []
-  on: reject
-  pass:
-  - summary
-  - artifacts
-  - checks
-  - notes
-  requires_approval: false
-- id: reviewer-to-documenter
-  from: reviewer
-  to: documenter
-  type: fixed
-  targets: []
-  on: success
-  pass:
-  - summary
-  - artifacts
-  - checks
-  requires_approval: false
-- id: reviewer-reject-to-implementer
-  from: reviewer
-  to: implementer
-  type: fixed
-  targets: []
-  on: reject
-  pass:
-  - summary
-  - artifacts
-  - checks
-  - notes
-  requires_approval: false
-- id: documenter-to-releaser
-  from: documenter
-  to: releaser
-  type: fixed
-  targets: []
-  on: success
-  pass:
-  - summary
-  - artifacts
-  - checks
-  requires_approval: false
-entry: intake
+entry: entry

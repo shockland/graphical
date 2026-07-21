@@ -271,6 +271,10 @@ extension OrgWorkspaceController: OrgInspectorViewDelegate {
         model.setEntry(id)
     }
 
+    func orgInspector(_ inspector: OrgInspectorView, didMirrorAgentAndModelFrom sourceId: String) {
+        model.mirrorAgentAndModel(from: sourceId)
+    }
+
     func orgInspector(_ inspector: OrgInspectorView, didUpdateEdge edge: OrgEdge) {
         model.replaceEdge(edge)
     }

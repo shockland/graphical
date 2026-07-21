@@ -16,7 +16,7 @@ final class GoalSourceTests: XCTestCase {
     }
 
     func testLoadDraftPrefersGoalFile() throws {
-        var project = try store.createProject(at: tempRoot, seedTemplate: true)
+        var project = try store.createProject(at: tempRoot, seed: .agenticMesh)
         project.config.goal = "yaml goal"
         try "file goal".write(
             to: tempRoot.appendingPathComponent("GOAL.md"),
@@ -28,7 +28,7 @@ final class GoalSourceTests: XCTestCase {
     }
 
     func testLoadDraftFallsBackToYAML() throws {
-        var project = try store.createProject(at: tempRoot, seedTemplate: true)
+        var project = try store.createProject(at: tempRoot, seed: .agenticMesh)
         project.config.goal = "yaml only"
         try store.save(project)
         // Remove goal file if seed created one
@@ -39,7 +39,7 @@ final class GoalSourceTests: XCTestCase {
     }
 
     func testCommitWritesYAMLAndFile() throws {
-        var project = try store.createProject(at: tempRoot, seedTemplate: true)
+        var project = try store.createProject(at: tempRoot, seed: .agenticMesh)
         try GoalSource.commit("committed goal", to: &project, store: store)
         XCTAssertEqual(project.config.goal, "committed goal")
         let fromFile = try store.loadGoalText(projectRoot: project.root, config: project.config)

@@ -1,4 +1,5 @@
 import Foundation
+import GraphicalDomain
 
 public struct SetupSession: Equatable, Sendable {
     public enum Mode: Equatable, Sendable {
@@ -13,17 +14,28 @@ public struct SetupSession: Equatable, Sendable {
 
     public var mode: Mode
     public var goal: String
+    /// Planner/interpreter lane count for the agentic-mesh seed (`2…8`).
+    public var meshWidth: Int
+    /// When true, fan-out planner lanes run concurrently.
+    public var parallelFanOut: Bool
     public var selectedPresetID: String?
     private(set) public var currentStep: Step
 
     public init(
         mode: Mode = .firstRun,
         goal: String = "",
+        meshWidth: Int = 3,
+        parallelFanOut: Bool = true,
         selectedPresetID: String? = "demo",
         currentStep: Step? = nil
     ) {
         self.mode = mode
         self.goal = goal
+        self.meshWidth = max(
+            OrgValidator.minMeshWidth,
+            min(OrgValidator.maxMeshWidth, meshWidth)
+        )
+        self.parallelFanOut = parallelFanOut
         self.selectedPresetID = selectedPresetID
         switch mode {
         case .firstRun:

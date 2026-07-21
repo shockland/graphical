@@ -24,7 +24,7 @@ final class EmptyStateView: NSView {
         brand.alignment = .center
 
         let subtitle = AppKitText.label(
-            "Describe a result, choose a coding tool, and Graphical guides Planner → Implementer → Reviewer.",
+            "Describe a result, choose planner lanes and a coding tool, and Graphical seeds an agentic mesh.",
             style: .body
         )
         subtitle.textColor = Theme.muted

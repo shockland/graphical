@@ -58,7 +58,7 @@ final class RunnerArgsEditingTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = YAMLStore()
-        _ = try store.createProject(at: root, name: "Shred", seedTemplate: true)
+        _ = try store.createProject(at: root, name: "Shred", seed: .agenticMesh)
         let shredded = RunnersConfig(runners: [
             "cursor_agent": RunnerTemplate(
                 command: "/bin/bash",

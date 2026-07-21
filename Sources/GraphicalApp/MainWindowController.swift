@@ -421,6 +421,8 @@ final class MainWindowController: NSWindowController, AppModelDelegate, NSWindow
                 session: SetupSession(
                     mode: .firstRun,
                     goal: self.model.goalDraft,
+                    meshWidth: self.model.project?.config.meshWidth ?? 3,
+                    parallelFanOut: self.model.project?.config.parallelFanOut ?? true,
                     selectedPresetID: self.model.inferredCodingToolPresetID() ?? "demo"
                 )
             )
@@ -568,9 +570,16 @@ extension MainWindowController: SetupAssistantControllerDelegate {
     func setupAssistant(
         _ controller: SetupAssistantController,
         finishWithGoal goal: String,
+        meshWidth: Int,
+        parallelFanOut: Bool,
         presetID: String
     ) -> Bool {
-        model.completeSetup(goal: goal, presetID: presetID)
+        model.completeSetup(
+            goal: goal,
+            meshWidth: meshWidth,
+            parallelFanOut: parallelFanOut,
+            presetID: presetID
+        )
     }
 
     func setupAssistant(

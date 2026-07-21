@@ -126,10 +126,21 @@ public actor RunEngine {
     private var project: GraphicalProject?
     /// Inbound handoff retained across approval pause for retry after approve.
     private var pausedInbound: HandoffContract?
+    /// Multi-inbound retained when pausing approval after a join (rare; MVP gates post-auditor).
+    private var pausedInbounds: [(fromNodeId: String, contract: HandoffContract)] = []
     /// Last non-nil inbound handoff a node was actually entered with, keyed by node id.
     /// Lets `retryActiveNode` re-enter a failed mid-graph node without dropping the
     /// prior summary/artifacts it was given (see plan 008).
     private var lastInboundByNode: [String: HandoffContract] = [:]
+    /// Multi-inbound packets for join destinations (e.g. auditor), keyed by node id.
+    private var lastMultiInboundByNode: [String: [(fromNodeId: String, contract: HandoffContract)]] = [:]
+    /// Nodes that have succeeded in the current run (join barrier tracking).
+    private var completedNodes: Set<String> = []
+    /// Filtered handoffs waiting at a join destination: dest → (from → contract).
+    private var joinInbound: [String: [String: HandoffContract]] = [:]
+    /// Sequentially drained ready queue (MVP: one ProcessRunner child at a time).
+    private var readyQueue: [ReadyWork] = []
+    private var isDrainingReadyQueue = false
     private var progressHandler: (@Sendable (RunProgressSnapshot) async -> Void)?
     private var invokeHeartbeatTask: Task<Void, Never>?
     private var invokeStartedAt: Date?
@@ -149,6 +160,13 @@ public actor RunEngine {
     /// Flush coalesced assistant deltas once they reach this size.
     private static let assistantCoalesceLimit = 120
 
+    private struct ReadyWork {
+        var nodeId: String
+        var inbound: HandoffContract?
+        var inbounds: [(fromNodeId: String, contract: HandoffContract)]
+        /// Fan-out siblings share a cohort id so they can drain concurrently.
+        var cohortID: UUID?
+    }
     public init(
         store: TraceStore,
         processRunner: any ProcessExecuting = ProcessRunner(),
@@ -190,10 +208,17 @@ public actor RunEngine {
         }
 
         cancelRequested = false
+        processRunner.prepareForNewRun()
         pendingApproval = nil
         lastInspection = nil
         pausedInbound = nil
+        pausedInbounds = []
         lastInboundByNode = [:]
+        lastMultiInboundByNode = [:]
+        completedNodes = []
+        joinInbound = [:]
+        readyQueue = []
+        isDrainingReadyQueue = false
         stopInvokeHeartbeat()
         liveLog = []
         currentPhase = "starting"
@@ -206,13 +231,13 @@ public actor RunEngine {
             status: .running,
             activeNodeId: entry
         )
-        try await store.saveRun(run)
-        currentRun = run
+        try await commitRun(run)
         try await trace(runId: run.id, kind: .runStarted, message: "Run started at \(entry)", nodeId: entry)
         log("Run started at \(entry)")
         await publishProgress()
 
-        try await executeFrom(nodeId: entry, inbound: nil, run: &run, project: project)
+        enqueueReady(nodeId: entry, inbound: nil)
+        try await drainReadyQueue(run: &run, project: project)
         return currentRun ?? run
     }
 
@@ -233,18 +258,22 @@ public actor RunEngine {
         )
         let destination = pending.inspection.toNode
         pendingApproval = nil
+        let inbound = contract
+        let inbounds = pausedInbounds
         pausedInbound = nil
+        pausedInbounds = []
+        cancelRequested = false
+        processRunner.prepareForNewRun()
         run.status = .running
         run.updatedAt = Date()
-        try await store.saveRun(run)
-        currentRun = run
+        try await commitRun(run)
 
-        try await executeFrom(
-            nodeId: destination,
-            inbound: contract,
-            run: &run,
-            project: project
-        )
+        if inbounds.isEmpty {
+            enqueueReady(nodeId: destination, inbound: inbound)
+        } else {
+            enqueueReady(nodeId: destination, inbounds: inbounds)
+        }
+        try await drainReadyQueue(run: &run, project: project)
         return currentRun ?? run
     }
 
@@ -260,10 +289,10 @@ public actor RunEngine {
         )
         pendingApproval = nil
         pausedInbound = nil
+        pausedInbounds = []
         run.status = .failed
         run.updatedAt = Date()
-        try await store.saveRun(run)
-        currentRun = run
+        try await commitRun(run)
         try await trace(runId: run.id, kind: .runFailed, message: "Run failed after approval rejection")
         return run
     }
@@ -281,8 +310,7 @@ public actor RunEngine {
         await publishProgress()
         run.status = .cancelled
         run.updatedAt = Date()
-        try await store.saveRun(run)
-        currentRun = run
+        try await commitRun(run)
         try await trace(runId: run.id, kind: .runCancelled, message: "Run cancelled")
     }
 
@@ -294,12 +322,151 @@ public actor RunEngine {
             throw RunEngineError.failed("Can only retry failed/cancelled runs")
         }
         cancelRequested = false
+        processRunner.prepareForNewRun()
         run.status = .running
         run.updatedAt = Date()
-        try await store.saveRun(run)
-        currentRun = run
+        try await commitRun(run)
         try await trace(runId: run.id, kind: .retry, message: "Retrying node \(nodeId)", nodeId: nodeId)
-        try await executeFrom(nodeId: nodeId, inbound: lastInboundByNode[nodeId], run: &run, project: project)
+        if let multi = lastMultiInboundByNode[nodeId], !multi.isEmpty {
+            enqueueReady(nodeId: nodeId, inbounds: multi)
+        } else {
+            enqueueReady(nodeId: nodeId, inbound: lastInboundByNode[nodeId])
+        }
+        try await drainReadyQueue(run: &run, project: project)
+    }
+
+    // MARK: - Ready queue / mesh scheduling
+
+    private func enqueueReady(
+        nodeId: String,
+        inbound: HandoffContract? = nil,
+        inbounds: [(fromNodeId: String, contract: HandoffContract)] = [],
+        cohortID: UUID? = nil
+    ) {
+        readyQueue.append(
+            ReadyWork(nodeId: nodeId, inbound: inbound, inbounds: inbounds, cohortID: cohortID)
+        )
+    }
+
+    private func drainReadyQueue(run: inout RunRecord, project: GraphicalProject) async throws {
+        if isDrainingReadyQueue { return }
+        isDrainingReadyQueue = true
+        defer { isDrainingReadyQueue = false }
+
+        while !readyQueue.isEmpty {
+            if cancelRequested { throw RunEngineError.cancelled }
+            // Stop draining if an approval gate paused the run.
+            if run.status == .awaitingApproval { return }
+
+            if project.config.parallelFanOut,
+               let cohortID = readyQueue.first?.cohortID,
+               readyQueue.filter({ $0.cohortID == cohortID }).count > 1 {
+                let batch = readyQueue.filter { $0.cohortID == cohortID }
+                readyQueue.removeAll { $0.cohortID == cohortID }
+                try await executeParallelCohort(batch, run: &run, project: project)
+            } else {
+                let work = readyQueue.removeFirst()
+                let pendingCount = readyQueue.count
+                if pendingCount > 0 {
+                    currentPhase = "lane queue: \(pendingCount) waiting"
+                    log("Ready queue: running \(work.nodeId) (\(pendingCount) still waiting)")
+                    await publishProgress()
+                }
+                try await executeFrom(
+                    nodeId: work.nodeId,
+                    inbound: work.inbound,
+                    inbounds: work.inbounds,
+                    run: &run,
+                    project: project
+                )
+            }
+
+            if let latest = currentRun {
+                run = latest
+            }
+            if run.status == .awaitingApproval
+                || run.status == .succeeded
+                || run.status == .failed
+                || run.status == .cancelled {
+                return
+            }
+        }
+    }
+
+    /// Runs fan-out lane heads concurrently; each lane still depth-firsts until join.
+    private func executeParallelCohort(
+        _ batch: [ReadyWork],
+        run: inout RunRecord,
+        project: GraphicalProject
+    ) async throws {
+        let names = batch.map(\.nodeId).joined(separator: ", ")
+        currentPhase = "parallel lanes: \(batch.count)"
+        log("Running \(batch.count) lanes in parallel: \(names)")
+        await publishProgress()
+
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for work in batch {
+                    group.addTask {
+                        try await self.executeLaneWork(work, project: project)
+                    }
+                }
+                try await group.waitForAll()
+            }
+        } catch {
+            cancelRequested = true
+            processRunner.cancelCurrent()
+            throw error
+        }
+
+        if let latest = currentRun {
+            run = latest
+        }
+    }
+
+    private func executeLaneWork(_ work: ReadyWork, project: GraphicalProject) async throws {
+        if cancelRequested || Task.isCancelled { throw RunEngineError.cancelled }
+        guard var run = currentRun else {
+            throw RunEngineError.failed("Missing run state for parallel lane")
+        }
+        try await executeFrom(
+            nodeId: work.nodeId,
+            inbound: work.inbound,
+            inbounds: work.inbounds,
+            run: &run,
+            project: project
+        )
+        mergeLaneRun(run)
+    }
+
+    /// Merges a lane's local `RunRecord` copy without letting `.running` clobber a
+    /// settled status written by a sibling lane (fail / cancel / approval / success).
+    private func mergeLaneRun(_ laneRun: RunRecord) {
+        syncCurrentRun(laneRun)
+    }
+
+    /// Persists run state; ignores `.running` writes that would clobber a settled status.
+    private func commitRun(_ run: RunRecord) async throws {
+        syncCurrentRun(run)
+        if let current = currentRun {
+            try await store.saveRun(current)
+        }
+    }
+
+    private func syncCurrentRun(_ run: RunRecord) {
+        if let current = currentRun, run.status == .running, Self.isSettled(current.status) {
+            return
+        }
+        currentRun = run
+    }
+
+    private static func isSettled(_ status: RunStatus) -> Bool {
+        switch status {
+        case .awaitingApproval, .succeeded, .failed, .cancelled:
+            return true
+        case .running, .pending:
+            return false
+        }
     }
 
     // MARK: - Core loop
@@ -307,6 +474,7 @@ public actor RunEngine {
     private func executeFrom(
         nodeId: String,
         inbound: HandoffContract?,
+        inbounds: [(fromNodeId: String, contract: HandoffContract)] = [],
         run: inout RunRecord,
         project: GraphicalProject
     ) async throws {
@@ -319,7 +487,9 @@ public actor RunEngine {
             throw RunEngineError.missingRunner(node.runner)
         }
 
-        if let inbound {
+        if !inbounds.isEmpty {
+            lastMultiInboundByNode[nodeId] = inbounds
+        } else if let inbound {
             lastInboundByNode[nodeId] = inbound
         }
 
@@ -327,8 +497,7 @@ public actor RunEngine {
         try throwIfCancelled()
         run.status = .running
         run.updatedAt = Date()
-        try await store.saveRun(run)
-        currentRun = run
+        try await commitRun(run)
         currentPhase = "preparing"
         currentIteration = nil
         log("→ \(node.role) (\(nodeId))")
@@ -372,7 +541,8 @@ public actor RunEngine {
                 inbound: inbound,
                 missingChecks: missingHints,
                 nodeArtifacts: nodeArtifacts,
-                modelHint: effectiveModel
+                modelHint: effectiveModel,
+                inbounds: inbounds
             )
             let promptURL = nodeArtifacts.appendingPathComponent("packet-\(iteration).md")
             log("[\(nodeId)] writing working packet…")
@@ -497,8 +667,7 @@ public actor RunEngine {
             try throwIfCancelled()
             run.status = .failed
             run.updatedAt = Date()
-            try await store.saveRun(run)
-            currentRun = run
+            try await commitRun(run)
             try await trace(
                 runId: run.id,
                 kind: .nodeFailed,
@@ -521,6 +690,7 @@ public actor RunEngine {
             message: "Node \(nodeId) completed",
             nodeId: nodeId
         )
+        completedNodes.insert(nodeId)
 
         let contract = NodeArtifacts.buildContract(
             nodeArtifacts: nodeArtifacts,
@@ -553,13 +723,56 @@ public actor RunEngine {
             run.status = .succeeded
             run.activeNodeId = nil
             run.updatedAt = Date()
-            try await store.saveRun(run)
-            currentRun = run
+            try await commitRun(run)
             currentPhase = "completed"
             currentIteration = nil
             log("Run succeeded")
             await publishProgress()
             try await trace(runId: run.id, kind: .runSucceeded, message: "Run succeeded at terminal node \(nodeId)")
+            return
+        }
+
+        var outbound = contract
+        if let next = routerNext {
+            outbound.next = next
+        }
+
+        // Fan-out: enqueue all targets with the same filtered contract (AND-activate).
+        if let fanOut = EdgeRouting.fanOutEdge(in: outgoing, on: [.success, .always]) {
+            let filtered = outbound.filtered(passing: fanOut.pass)
+            try await trace(
+                runId: run.id,
+                kind: .routed,
+                message: "Fan-out to \(fanOut.targets.joined(separator: ", "))",
+                nodeId: nodeId
+            )
+            let cohortID = project.config.parallelFanOut && fanOut.targets.count > 1
+                ? UUID()
+                : nil
+            for target in fanOut.targets {
+                let inspection = HandoffInspection(
+                    edgeId: fanOut.id,
+                    fromNode: node.id,
+                    toNode: target,
+                    passed: filtered.passed,
+                    withheld: filtered.withheld,
+                    requiresApproval: false,
+                    nextHopReason: outbound.next?.reason
+                )
+                lastInspection = inspection
+                try await trace(
+                    runId: run.id,
+                    kind: .handoffBuilt,
+                    message: "Handoff \(node.id) → \(target)",
+                    nodeId: node.id,
+                    payloadJSON: encodeJSON(inspection)
+                )
+                enqueueReady(nodeId: target, inbound: filtered.passed, cohortID: cohortID)
+            }
+            let mode = cohortID == nil ? "queued" : "parallel"
+            currentPhase = "fan-out: \(fanOut.targets.count) lanes \(mode)"
+            log("[\(nodeId)] fan-out → \(fanOut.targets.count) lanes (\(mode))")
+            await publishProgress()
             return
         }
 
@@ -578,6 +791,13 @@ public actor RunEngine {
                 nodeId: nodeId,
                 payloadJSON: encodeJSON(next)
             )
+        } else if selection.edge.type == .join {
+            try await trace(
+                runId: run.id,
+                kind: .routed,
+                message: "Join edge to \(selection.destination)",
+                nodeId: nodeId
+            )
         } else {
             try await trace(
                 runId: run.id,
@@ -587,9 +807,16 @@ public actor RunEngine {
             )
         }
 
-        var outbound = contract
-        if let next = routerNext {
-            outbound.next = next
+        if selection.edge.type == .join {
+            try await scheduleJoin(
+                from: node,
+                edge: selection.edge,
+                destination: selection.destination,
+                contract: outbound,
+                run: &run,
+                project: project
+            )
+            return
         }
 
         try await handoff(
@@ -600,6 +827,100 @@ public actor RunEngine {
             run: &run,
             project: project
         )
+    }
+
+    /// Records a join inbound; when all predecessors have arrived, enqueues the destination.
+    private func scheduleJoin(
+        from node: OrgNode,
+        edge: OrgEdge,
+        destination: String,
+        contract: HandoffContract,
+        run: inout RunRecord,
+        project: GraphicalProject
+    ) async throws {
+        let filtered = contract.filtered(passing: edge.pass)
+        let inspection = HandoffInspection(
+            edgeId: edge.id,
+            fromNode: node.id,
+            toNode: destination,
+            passed: filtered.passed,
+            withheld: filtered.withheld,
+            requiresApproval: edge.requiresApproval,
+            nextHopReason: contract.next?.reason
+        )
+        lastInspection = inspection
+        try await trace(
+            runId: run.id,
+            kind: .handoffBuilt,
+            message: "Handoff \(node.id) → \(destination) (join)",
+            nodeId: node.id,
+            payloadJSON: encodeJSON(inspection)
+        )
+
+        var byFrom = joinInbound[destination] ?? [:]
+        byFrom[node.id] = filtered.passed
+        joinInbound[destination] = byFrom
+
+        let predecessors = project.org.joinPredecessors(of: destination)
+        let arrived = predecessors.filter { byFrom[$0] != nil }.count
+        currentPhase = "join: \(arrived)/\(predecessors.count) at \(destination)"
+        log("[\(node.id)] join → \(destination) (\(arrived)/\(predecessors.count))")
+        await publishProgress()
+
+        guard !predecessors.isEmpty, predecessors.allSatisfy({ byFrom[$0] != nil }) else {
+            return
+        }
+
+        let inbounds = predecessors.compactMap { fromId -> (fromNodeId: String, contract: HandoffContract)? in
+            guard let contract = byFrom[fromId] else { return nil }
+            return (fromId, contract)
+        }
+        try await trace(
+            runId: run.id,
+            kind: .joinReady,
+            message: "Join ready at \(destination) (\(inbounds.count) lanes)",
+            nodeId: destination
+        )
+        log("Join barrier met at \(destination)")
+
+        if edge.requiresApproval {
+            // MVP: seed avoids approval on join; if set, pause with aggregated notes.
+            let aggregate = HandoffContract(
+                summary: "Join of \(inbounds.count) lanes ready for \(destination)",
+                artifacts: inbounds.flatMap(\.contract.artifacts),
+                notes: inbounds.map { "\($0.fromNodeId): \($0.contract.summary)" }.joined(separator: " | ")
+            )
+            let joinInspection = HandoffInspection(
+                edgeId: edge.id,
+                fromNode: node.id,
+                toNode: destination,
+                passed: aggregate,
+                withheld: [],
+                requiresApproval: true,
+                nextHopReason: nil
+            )
+            lastInspection = joinInspection
+            try throwIfCancelled()
+            run.status = .awaitingApproval
+            run.updatedAt = Date()
+            try await commitRun(run)
+            pendingApproval = PendingApproval(runId: run.id, inspection: joinInspection)
+            pausedInbound = aggregate
+            pausedInbounds = inbounds
+            currentPhase = "awaiting approval"
+            try await trace(
+                runId: run.id,
+                kind: .awaitingApproval,
+                message: "Awaiting approval for \(destination)",
+                nodeId: node.id,
+                payloadJSON: encodeJSON(joinInspection)
+            )
+            log("Awaiting approval: join → \(destination)")
+            await publishProgress()
+            return
+        }
+
+        enqueueReady(nodeId: destination, inbounds: inbounds)
     }
 
     /// Routes a node-level reject signal to its `on: .reject` edge(s). Fails the run
@@ -619,8 +940,7 @@ public actor RunEngine {
             try throwIfCancelled()
             run.status = .failed
             run.updatedAt = Date()
-            try await store.saveRun(run)
-            currentRun = run
+            try await commitRun(run)
             try await trace(
                 runId: run.id,
                 kind: .nodeFailed,
@@ -706,6 +1026,8 @@ public actor RunEngine {
                 throw RunEngineError.routerTargetNotAllowed(id)
             case .noOutgoingEdge(let id):
                 throw RunEngineError.noOutgoingEdge(id)
+            case .fanOutNotSelectable(let id):
+                throw RunEngineError.failed("Node '\(id)' has a fan-out edge that must be scheduled by the engine")
             }
         }
     }
@@ -749,10 +1071,10 @@ public actor RunEngine {
             try throwIfCancelled()
             run.status = .awaitingApproval
             run.updatedAt = Date()
-            try await store.saveRun(run)
-            currentRun = run
+            try await commitRun(run)
             pendingApproval = PendingApproval(runId: run.id, inspection: inspection)
             pausedInbound = filtered.passed
+            pausedInbounds = []
             currentPhase = "awaiting approval"
             try await trace(
                 runId: run.id,
@@ -766,6 +1088,7 @@ public actor RunEngine {
             return
         }
 
+        // Depth-first within a lane (fixed/router). Mesh fan-out/join use the ready queue.
         try await executeFrom(nodeId: destination, inbound: filtered.passed, run: &run, project: project)
     }
 

@@ -29,7 +29,7 @@ final class RunConsoleController: NSObject {
     )
     private let headerStack = NSStackView()
     private let subtitleLabel = AppKitText.label(
-        "Runs Planner → Implementer → Reviewer from the entry step using each node’s coding tool.",
+        "Runs the org mesh from the entry step using each node’s coding tool.",
         style: .muted
     )
     private var pulseLayer: CALayer?

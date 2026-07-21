@@ -7,11 +7,46 @@ runners:
 
       export PATH="$HOME/.local/bin:$PATH"
 
-      cursor-agent -p --output-format stream-json --stream-partial-output --trust --force --workspace {{project_root}} --model {{model}}
-      "$(cat {{prompt_file}})"
-
-      '
+      cursor-agent -p --output-format stream-json --stream-partial-output --trust
+      --force --workspace {{project_root}} --model {{model}} "$(cat {{prompt_file}})"'
     cwd: '{{project_root}}'
     env: {}
     kind: cursor_agent
     default_model: composer-2.5-fast
+  claude_code:
+    command: claude
+    args:
+    - -p
+    - '{{prompt_file}}'
+    - --model
+    - '{{model}}'
+    cwd: '{{project_root}}'
+    env: {}
+    kind: claude_code
+    default_model: sonnet
+  echo_fixture:
+    command: /bin/bash
+    args:
+    - -lc
+    - "set -euo pipefail\nPACKET={{prompt_file}}\nOUT={{node_artifacts}}\nmkdir -p
+      \"$OUT\"\nROLE=$(basename \"$OUT\")\ncase \"$ROLE\" in\n  entry)\n    echo \"Mesh
+      ready.\" > \"$OUT/summary.txt\"\n    ;;\n  planner|planner-*)\n    echo \"#
+      Plan\" > \"$OUT/plan.md\"\n    echo \"Implement the goal in small steps.\" >>
+      \"$OUT/plan.md\"\n    echo \"Planner lane ready.\" > \"$OUT/summary.txt\"\n
+      \   if [[ \"$ROLE\" == \"planner\" ]]; then\n      printf '%s\\n' '{\"node_id\":\"implementer\",\"reason\":\"Plan
+      ready for implementation\"}' > \"$OUT/next.json\"\n    fi\n    ;;\n  interpreter|interpreter-*)\n
+      \   echo \"# Interpretation\" > \"$OUT/interpretation.md\"\n    echo \"Refined
+      attack plan.\" >> \"$OUT/interpretation.md\"\n    echo \"Interpreter lane ready.\"
+      > \"$OUT/summary.txt\"\n    ;;\n  auditor)\n    echo \"# Final Plan\" > \"$OUT/final-plan.md\"\n
+      \   echo \"Synthesized from all interpreter lanes.\" >> \"$OUT/final-plan.md\"\n
+      \   echo \"Auditor chose the final plan.\" > \"$OUT/summary.txt\"\n    ;;\n
+      \ implementer)\n    echo \"# Implementation\" > \"$OUT/implementation.md\"\n
+      \   echo \"Done.\" >> \"$OUT/implementation.md\"\n    echo \"Implementation
+      complete.\" > \"$OUT/summary.txt\"\n    ;;\n  report)\n    echo \"# Report\"
+      > \"$OUT/report.md\"\n    echo \"Mesh run complete.\" >> \"$OUT/report.md\"\n
+      \   ;;\n  reviewer)\n    echo \"# Review\" > \"$OUT/review.md\"\n    echo \"Approved.\"
+      >> \"$OUT/review.md\"\n    ;;\n  *)\n    echo \"# Output\" > \"$OUT/output.md\"\n
+      \   ;;\nesac\necho \"Fixture runner completed for $ROLE (packet: $PACKET)\""
+    cwd: '{{project_root}}'
+    env: {}
+    kind: custom

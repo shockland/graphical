@@ -1,5 +1,13 @@
 import Foundation
 
+/// Which org graph `YAMLStore.createProject` writes under `.graphical/`.
+public enum ProjectSeedTemplate: Equatable, Sendable {
+    case none
+    case plannerImplementerReviewer
+    /// Fan-out → `meshWidth` Planner→Interpreter lanes → join → Auditor → Implementer → Report.
+    case agenticMesh
+}
+
 public enum SeedTemplate {
     /// Planner (router) → Implementer → Reviewer with optional approval before implementer.
     ///
@@ -93,6 +101,175 @@ public enum SeedTemplate {
         return OrgGraph(nodes: [planner, implementer, reviewer], edges: edges, entry: "planner")
     }
 
+    /// Fan-out → `X` Planner→Interpreter lanes → join → Auditor → Implementer → Report.
+    /// Width is static after seed; change `X` by re-seeding (`ProjectConfig.meshWidth`).
+    public static func agenticMesh(
+        width: Int,
+        runnerName: String = "echo_fixture",
+        agentKind: AgentKind? = nil
+    ) -> OrgGraph {
+        let w = max(OrgValidator.minMeshWidth, min(OrgValidator.maxMeshWidth, width))
+        let preserveClaudeModels = agentKind == nil || agentKind == .claudeCode
+
+        let entry = OrgNode(
+            id: "entry",
+            role: "Coordinator",
+            runner: runnerName,
+            model: nil,
+            instructions: """
+            You are the mesh coordinator. Confirm the goal is ready, then write summary.txt.
+            Fan-out will activate all planner lanes.
+            """,
+            done: .allOf([.artifact("summary.txt")]),
+            maxIterations: 1,
+            timeoutSeconds: 30
+        )
+
+        var nodes: [OrgNode] = [entry]
+        var edges: [OrgEdge] = []
+        var plannerIds: [String] = []
+
+        for i in 1...w {
+            let plannerId = "planner-\(i)"
+            plannerIds.append(plannerId)
+            nodes.append(
+                OrgNode(
+                    id: plannerId,
+                    role: "Planner",
+                    runner: runnerName,
+                    model: preserveClaudeModels ? "opus" : nil,
+                    instructions: """
+                    You are Planner lane \(i) of \(w). Produce plan.md with your approach to the goal.
+                    Write summary.txt with a one-sentence handoff for your interpreter.
+                    """,
+                    done: .allOf([.artifact("plan.md"), .artifact("summary.txt")]),
+                    maxIterations: 3,
+                    timeoutSeconds: 30
+                )
+            )
+            let interpreterId = "interpreter-\(i)"
+            nodes.append(
+                OrgNode(
+                    id: interpreterId,
+                    role: "Interpreter",
+                    runner: runnerName,
+                    model: preserveClaudeModels ? "sonnet" : nil,
+                    instructions: """
+                    You are Interpreter lane \(i) of \(w). Read plan.md from inbound artifacts.
+                    Produce interpretation.md refining the attack plan for the auditor.
+                    Write summary.txt for join handoff.
+                    """,
+                    done: .allOf([.artifact("interpretation.md"), .artifact("summary.txt")]),
+                    maxIterations: 3,
+                    timeoutSeconds: 30
+                )
+            )
+            edges.append(
+                OrgEdge(
+                    id: "\(plannerId)-to-\(interpreterId)",
+                    from: plannerId,
+                    to: interpreterId,
+                    type: .fixed,
+                    on: .success,
+                    pass: [.summary, .artifacts, .checks]
+                )
+            )
+            edges.append(
+                OrgEdge(
+                    id: "\(interpreterId)-join-auditor",
+                    from: interpreterId,
+                    to: "auditor",
+                    type: .join,
+                    on: .success,
+                    pass: [.summary, .artifacts, .checks]
+                )
+            )
+        }
+
+        edges.insert(
+            OrgEdge(
+                id: "entry-fanout",
+                from: "entry",
+                type: .fanOut,
+                targets: plannerIds,
+                on: .success,
+                pass: [.summary, .artifacts, .checks]
+            ),
+            at: 0
+        )
+
+        nodes.append(
+            OrgNode(
+                id: "auditor",
+                role: "Auditor",
+                runner: runnerName,
+                model: preserveClaudeModels ? "opus" : nil,
+                instructions: """
+                You are the Auditor. Review all interpreter inbound handoffs and produce final-plan.md
+                synthesizing one approach. Write summary.txt for the implementer (final plan only).
+                """,
+                done: .allOf([.artifact("final-plan.md"), .artifact("summary.txt")]),
+                maxIterations: 3,
+                timeoutSeconds: 30
+            )
+        )
+        nodes.append(
+            OrgNode(
+                id: "implementer",
+                role: "Implementer",
+                runner: runnerName,
+                model: preserveClaudeModels ? "sonnet" : nil,
+                instructions: """
+                You are the Implementer. Follow the auditor's final-plan.md and produce implementation.md.
+                """,
+                done: .allOf([
+                    .artifact("implementation.md"),
+                    .shell("test -f implementation.md")
+                ]),
+                maxIterations: 5,
+                timeoutSeconds: 30
+            )
+        )
+        nodes.append(
+            OrgNode(
+                id: "report",
+                role: "Report",
+                runner: runnerName,
+                model: nil,
+                instructions: """
+                You are Report. Produce report.md summarizing the mesh run outcome.
+                """,
+                done: .allOf([.artifact("report.md")]),
+                maxIterations: 2,
+                timeoutSeconds: 30
+            )
+        )
+
+        edges.append(
+            OrgEdge(
+                id: "auditor-to-implementer",
+                from: "auditor",
+                to: "implementer",
+                type: .fixed,
+                on: .success,
+                pass: [.summary, .artifacts, .checks],
+                requiresApproval: true
+            )
+        )
+        edges.append(
+            OrgEdge(
+                id: "implementer-to-report",
+                from: "implementer",
+                to: "report",
+                type: .fixed,
+                on: .success,
+                pass: [.summary, .artifacts, .checks]
+            )
+        )
+
+        return OrgGraph(nodes: nodes, edges: edges, entry: "entry")
+    }
+
     public static func defaultRunners() -> RunnersConfig {
         RunnersConfig(runners: [
             "echo_fixture": RunnerTemplate(
@@ -106,14 +283,35 @@ public enum SeedTemplate {
                     mkdir -p "$OUT"
                     ROLE=$(basename "$OUT")
                     case "$ROLE" in
-                      planner)
+                      entry)
+                        echo "Mesh ready." > "$OUT/summary.txt"
+                        ;;
+                      planner|planner-*)
                         echo "# Plan" > "$OUT/plan.md"
                         echo "Implement the goal in small steps." >> "$OUT/plan.md"
-                        printf '%s\\n' '{"node_id":"implementer","reason":"Plan ready for implementation"}' > "$OUT/next.json"
+                        echo "Planner lane ready." > "$OUT/summary.txt"
+                        if [[ "$ROLE" == "planner" ]]; then
+                          printf '%s\\n' '{"node_id":"implementer","reason":"Plan ready for implementation"}' > "$OUT/next.json"
+                        fi
+                        ;;
+                      interpreter|interpreter-*)
+                        echo "# Interpretation" > "$OUT/interpretation.md"
+                        echo "Refined attack plan." >> "$OUT/interpretation.md"
+                        echo "Interpreter lane ready." > "$OUT/summary.txt"
+                        ;;
+                      auditor)
+                        echo "# Final Plan" > "$OUT/final-plan.md"
+                        echo "Synthesized from all interpreter lanes." >> "$OUT/final-plan.md"
+                        echo "Auditor chose the final plan." > "$OUT/summary.txt"
                         ;;
                       implementer)
                         echo "# Implementation" > "$OUT/implementation.md"
                         echo "Done." >> "$OUT/implementation.md"
+                        echo "Implementation complete." > "$OUT/summary.txt"
+                        ;;
+                      report)
+                        echo "# Report" > "$OUT/report.md"
+                        echo "Mesh run complete." >> "$OUT/report.md"
                         ;;
                       reviewer)
                         echo "# Review" > "$OUT/review.md"

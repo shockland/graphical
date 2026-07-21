@@ -523,12 +523,12 @@ final class OrgCanvasView: NSView {
 
         let destinations: [CGPoint]
         switch edge.type {
-        case .fixed:
+        case .fixed, .join:
             guard let toId = edge.to,
                   let toNode = org.node(id: toId),
                   let toPos = layout.nodes[toId] else { return }
             destinations = [nodeCenter(toNode, pos: toPos)]
-        case .router:
+        case .router, .fanOut:
             destinations = edge.targets.compactMap { id in
                 guard let node = org.node(id: id), let pos = layout.nodes[id] else { return nil }
                 return nodeCenter(node, pos: pos)
@@ -537,7 +537,7 @@ final class OrgCanvasView: NSView {
 
         for (index, to) in destinations.enumerated() {
             let path = bezier(from: from, to: to)
-            if edge.type == .router {
+            if edge.type == .router || edge.type == .fanOut {
                 let dashes: [CGFloat] = [6, 4]
                 path.setLineDash(dashes, count: 2, phase: 0)
             }
@@ -640,12 +640,12 @@ final class OrgCanvasView: NSView {
             let from = nodeCenter(fromNode, pos: fromPos)
             let tos: [CGPoint]
             switch edge.type {
-            case .fixed:
+            case .fixed, .join:
                 guard let toId = edge.to,
                       let toNode = org.node(id: toId),
                       let toPos = layout.nodes[toId] else { continue }
                 tos = [nodeCenter(toNode, pos: toPos)]
-            case .router:
+            case .router, .fanOut:
                 tos = edge.targets.compactMap { id in
                     guard let node = org.node(id: id), let pos = layout.nodes[id] else { return nil }
                     return nodeCenter(node, pos: pos)

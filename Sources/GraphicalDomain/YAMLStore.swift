@@ -93,7 +93,8 @@ public struct YAMLStore: @unchecked Sendable {
     public func createProject(
         at projectRoot: URL,
         name: String? = nil,
-        seedTemplate: Bool = true,
+        seed: ProjectSeedTemplate = .agenticMesh,
+        meshWidth: Int? = nil,
         goalFile: String? = "GOAL.md"
     ) throws -> GraphicalProject {
         var isDir: ObjCBool = false
@@ -109,9 +110,21 @@ public struct YAMLStore: @unchecked Sendable {
         )
 
         let projectName = name ?? projectRoot.lastPathComponent
-        let config = ProjectConfig(name: projectName, goal: "", goalFile: goalFile)
-        let org = seedTemplate ? SeedTemplate.plannerImplementerReviewer() : OrgGraph()
-        let runners = seedTemplate ? SeedTemplate.defaultRunners() : RunnersConfig()
+        let width = Self.clampedMeshWidth(meshWidth ?? 3)
+        let config = ProjectConfig(name: projectName, goal: "", goalFile: goalFile, meshWidth: width)
+        let org: OrgGraph
+        let runners: RunnersConfig
+        switch seed {
+        case .none:
+            org = OrgGraph()
+            runners = RunnersConfig()
+        case .plannerImplementerReviewer:
+            org = SeedTemplate.plannerImplementerReviewer()
+            runners = SeedTemplate.defaultRunners()
+        case .agenticMesh:
+            org = SeedTemplate.agenticMesh(width: width)
+            runners = SeedTemplate.defaultRunners()
+        }
 
         let project = GraphicalProject(root: projectRoot, config: config, org: org, runners: runners)
         try save(project)
@@ -120,6 +133,11 @@ public struct YAMLStore: @unchecked Sendable {
         try ensureArtifactsGitignore(projectRoot: projectRoot)
         try ensureGoalFile(projectRoot: projectRoot, config: config)
         return project
+    }
+
+    /// Clamps lane count to `OrgValidator` mesh bounds.
+    public static func clampedMeshWidth(_ width: Int) -> Int {
+        max(OrgValidator.minMeshWidth, min(OrgValidator.maxMeshWidth, width))
     }
 
     public func load(from projectRoot: URL) throws -> GraphicalProject {

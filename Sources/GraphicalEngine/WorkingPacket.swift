@@ -10,7 +10,8 @@ public enum WorkingPacketBuilder {
         inbound: HandoffContract?,
         missingChecks: [String],
         nodeArtifacts: URL,
-        modelHint: String? = nil
+        modelHint: String? = nil,
+        inbounds: [(fromNodeId: String, contract: HandoffContract)] = []
     ) -> String {
         var lines: [String] = []
         lines.append("# Graphical Working Packet")
@@ -32,7 +33,23 @@ public enum WorkingPacketBuilder {
         lines.append("## Role Instructions")
         lines.append(node.instructions)
         lines.append("")
-        if let inbound {
+        if !inbounds.isEmpty {
+            lines.append("## Inbound Handoffs")
+            for entry in inbounds {
+                lines.append("### From \(entry.fromNodeId)")
+                lines.append("- summary: \(entry.contract.summary)")
+                if !entry.contract.artifacts.isEmpty {
+                    lines.append("- artifacts:")
+                    for artifact in entry.contract.artifacts {
+                        lines.append("  - \(artifact)")
+                    }
+                }
+                if let notes = entry.contract.notes, !notes.isEmpty {
+                    lines.append("- notes: \(notes)")
+                }
+                lines.append("")
+            }
+        } else if let inbound {
             lines.append("## Inbound Handoff")
             lines.append("- summary: \(inbound.summary)")
             if !inbound.artifacts.isEmpty {

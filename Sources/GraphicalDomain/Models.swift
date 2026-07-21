@@ -13,6 +13,13 @@ public struct ProjectConfig: Codable, Equatable, Sendable {
     /// output routinely echoes secrets (tokens, `.env` contents). Opt in per-project to
     /// aid debugging; see plans/011-trace-output-redaction.md.
     public var traceCLIOutput: Bool
+    /// Lane count `X` for `SeedTemplate.agenticMesh(width:)`. Runtime does not
+    /// re-expand the org; changing width requires re-seeding. Default 3; bounds
+    /// enforced by `OrgValidator` when the mesh seed is validated.
+    public var meshWidth: Int
+    /// When `true` (default), fan-out targets run as a concurrent cohort (one
+    /// process per lane). When `false`, lane heads drain sequentially.
+    public var parallelFanOut: Bool
 
     public init(
         name: String,
@@ -20,7 +27,9 @@ public struct ProjectConfig: Codable, Equatable, Sendable {
         goalFile: String? = "GOAL.md",
         defaultMaxIterations: Int = 5,
         defaultTimeoutSeconds: Int = 600,
-        traceCLIOutput: Bool = false
+        traceCLIOutput: Bool = false,
+        meshWidth: Int = 3,
+        parallelFanOut: Bool = true
     ) {
         self.name = name
         self.goal = goal
@@ -28,14 +37,16 @@ public struct ProjectConfig: Codable, Equatable, Sendable {
         self.defaultMaxIterations = defaultMaxIterations
         self.defaultTimeoutSeconds = defaultTimeoutSeconds
         self.traceCLIOutput = traceCLIOutput
+        self.meshWidth = meshWidth
+        self.parallelFanOut = parallelFanOut
     }
 
     // No CodingKeys remapping: on-disk `project.yaml` uses these camelCase property
     // names verbatim (see `goalFile`, `defaultMaxIterations`). Custom `init(from:)`
-    // only exists to default `traceCLIOutput` to `false` for pre-existing project
-    // files that predate this field, matching the other optional-with-default fields.
+    // only exists to default newer fields for pre-existing project files.
     private enum CodingKeys: String, CodingKey {
-        case name, goal, goalFile, defaultMaxIterations, defaultTimeoutSeconds, traceCLIOutput
+        case name, goal, goalFile, defaultMaxIterations, defaultTimeoutSeconds, traceCLIOutput, meshWidth
+        case parallelFanOut
     }
 
     public init(from decoder: Decoder) throws {
@@ -46,6 +57,8 @@ public struct ProjectConfig: Codable, Equatable, Sendable {
         defaultMaxIterations = try container.decodeIfPresent(Int.self, forKey: .defaultMaxIterations) ?? 5
         defaultTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .defaultTimeoutSeconds) ?? 600
         traceCLIOutput = try container.decodeIfPresent(Bool.self, forKey: .traceCLIOutput) ?? false
+        meshWidth = try container.decodeIfPresent(Int.self, forKey: .meshWidth) ?? 3
+        parallelFanOut = try container.decodeIfPresent(Bool.self, forKey: .parallelFanOut) ?? true
     }
 }
 
@@ -196,6 +209,10 @@ public enum EdgeCondition: String, Codable, Equatable, Sendable {
 public enum EdgeType: String, Codable, Equatable, Sendable {
     case fixed
     case router
+    /// Activate all `targets` after the source succeeds (AND), unlike `.router` (XOR).
+    case fanOut = "fan_out"
+    /// Barrier edge: destination runs only after all inbound `.join` predecessors succeed.
+    case join
 }
 
 public enum HandoffField: String, Codable, Equatable, CaseIterable, Sendable {
@@ -283,9 +300,9 @@ public struct OrgGraph: Codable, Equatable, Sendable {
             guard edge.on == .success || edge.on == .always else { continue }
             let nexts: [String]
             switch edge.type {
-            case .fixed:
+            case .fixed, .join:
                 nexts = edge.to.map { [$0] } ?? []
-            case .router:
+            case .router, .fanOut:
                 nexts = edge.targets
             }
             for next in nexts where seen.insert(next).inserted {
@@ -293,6 +310,13 @@ public struct OrgGraph: Codable, Equatable, Sendable {
             }
         }
         return result
+    }
+
+    /// Predecessors that must succeed before `nodeId` may run, via inbound `.join` edges.
+    public func joinPredecessors(of nodeId: String) -> [String] {
+        edges
+            .filter { $0.type == .join && $0.to == nodeId }
+            .map(\.from)
     }
 
     public var entryNodeId: String? {
@@ -340,9 +364,9 @@ public struct CanvasLayout: Codable, Equatable, Sendable {
             for edge in org.outgoingEdges(from: id) {
                 let nexts: [String]
                 switch edge.type {
-                case .fixed:
+                case .fixed, .join:
                     nexts = edge.to.map { [$0] } ?? []
-                case .router:
+                case .router, .fanOut:
                     nexts = edge.targets
                 }
                 for next in nexts where layerOf[next] == nil && ids.contains(next) {
@@ -591,6 +615,7 @@ public enum TraceEventKind: String, Codable, Equatable, Sendable {
     case approved
     case rejected
     case routed
+    case joinReady
     case nodeSucceeded
     case nodeFailed
     case runSucceeded

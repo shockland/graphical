@@ -48,4 +48,46 @@ final class EdgeRoutingTests: XCTestCase {
             XCTAssertEqual(error as? EdgeRouting.Error, .routerTargetNotAllowed("ghost"))
         }
     }
+
+    func testSelectsJoinEdgeLikeFixed() throws {
+        let edges = [
+            OrgEdge(from: "interpreter-1", to: "auditor", type: .join, on: .success)
+        ]
+        let selection = try EdgeRouting.select(
+            outgoing: edges,
+            on: [.success, .always],
+            nodeId: "interpreter-1",
+            routerNext: nil,
+            loadRouterNext: { nil }
+        )
+        XCTAssertEqual(selection.destination, "auditor")
+        XCTAssertEqual(selection.edge.type, .join)
+    }
+
+    func testFanOutIsNotSelectableAsSingleHop() {
+        let edges = [
+            OrgEdge(from: "entry", type: .fanOut, targets: ["planner-1", "planner-2"], on: .success)
+        ]
+        XCTAssertThrowsError(
+            try EdgeRouting.select(
+                outgoing: edges,
+                on: [.success, .always],
+                nodeId: "entry",
+                routerNext: nil,
+                loadRouterNext: { nil }
+            )
+        ) { error in
+            XCTAssertEqual(error as? EdgeRouting.Error, .fanOutNotSelectable("entry"))
+        }
+    }
+
+    func testFanOutEdgeHelperFindsFanOut() {
+        let edges = [
+            OrgEdge(from: "entry", to: "other", type: .fixed, on: .fail),
+            OrgEdge(from: "entry", type: .fanOut, targets: ["a", "b"], on: .success)
+        ]
+        let found = EdgeRouting.fanOutEdge(in: edges, on: [.success, .always])
+        XCTAssertEqual(found?.type, .fanOut)
+        XCTAssertEqual(found?.targets, ["a", "b"])
+    }
 }
