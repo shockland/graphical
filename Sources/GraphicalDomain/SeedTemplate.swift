@@ -103,13 +103,17 @@ public enum SeedTemplate {
 
     /// Fan-out → `X` Planner→Interpreter lanes → join → Auditor → Implementer → Report.
     /// Width is static after seed; change `X` by re-seeding (`ProjectConfig.meshWidth`).
+    ///
+    /// Seed model policy is nil-inherit: per-node `model` stays `nil` so each node uses its
+    /// runner's `defaultModel`. Distinct planner models come from user configuration, not
+    /// hard-coded seed ladders. (`agentKind` is retained for call-site compatibility.)
     public static func agenticMesh(
         width: Int,
         runnerName: String = "echo_fixture",
         agentKind: AgentKind? = nil
     ) -> OrgGraph {
         let w = max(OrgValidator.minMeshWidth, min(OrgValidator.maxMeshWidth, width))
-        let preserveClaudeModels = agentKind == nil || agentKind == .claudeCode
+        _ = agentKind
 
         let entry = OrgNode(
             id: "entry",
@@ -137,10 +141,12 @@ public enum SeedTemplate {
                     id: plannerId,
                     role: "Planner",
                     runner: runnerName,
-                    model: preserveClaudeModels ? "opus" : nil,
+                    model: nil,
                     instructions: """
-                    You are Planner lane \(i) of \(w). Produce plan.md with your approach to the goal.
-                    Write summary.txt with a one-sentence handoff for your interpreter.
+                    You are Planner lane \(i) of \(w). You have your own coding tool and model \
+                    (configured on this node). Read the goal and produce plan.md with your approach.
+                    Also write summary.txt with exactly one sentence summarizing the plan for your \
+                    paired interpreter. Do not coordinate with other planner lanes.
                     """,
                     done: .allOf([.artifact("plan.md"), .artifact("summary.txt")]),
                     maxIterations: 3,
@@ -153,11 +159,15 @@ public enum SeedTemplate {
                     id: interpreterId,
                     role: "Interpreter",
                     runner: runnerName,
-                    model: preserveClaudeModels ? "sonnet" : nil,
+                    model: nil,
                     instructions: """
-                    You are Interpreter lane \(i) of \(w). Read plan.md from inbound artifacts.
-                    Produce interpretation.md refining the attack plan for the auditor.
-                    Write summary.txt for join handoff.
+                    You are Interpreter lane \(i) of \(w). Read inbound plan.md from your paired \
+                    planner. Extract goals — do not re-plan.
+                    Produce interpretation.md with these required sections:
+                    - Plan goals (numbered list)
+                    - Approach summary
+                    - Risks / conflicts for auditor
+                    Write summary.txt as one line stating the goal count (e.g. "3 goals extracted").
                     """,
                     done: .allOf([.artifact("interpretation.md"), .artifact("summary.txt")]),
                     maxIterations: 3,
@@ -203,10 +213,19 @@ public enum SeedTemplate {
                 id: "auditor",
                 role: "Auditor",
                 runner: runnerName,
-                model: preserveClaudeModels ? "opus" : nil,
+                model: nil,
                 instructions: """
-                You are the Auditor. Review all interpreter inbound handoffs and produce final-plan.md
-                synthesizing one approach. Write summary.txt for the implementer (final plan only).
+                You are the Auditor. Read every interpreter inbound handoff (interpretation.md).
+                Merge procedure: dedupe goals, resolve conflicts with recorded rationale, order by \
+                dependency, then emit one final-plan.md with these required sections:
+                - Summary
+                - Merged Objectives
+                - Implementation Phases
+                - Acceptance Criteria
+                - Constraints
+                - Conflicts Resolved
+                - Out of Scope
+                Write summary.txt naming the chosen plan only (final plan for the implementer).
                 """,
                 done: .allOf([.artifact("final-plan.md"), .artifact("summary.txt")]),
                 maxIterations: 3,
@@ -218,9 +237,10 @@ public enum SeedTemplate {
                 id: "implementer",
                 role: "Implementer",
                 runner: runnerName,
-                model: preserveClaudeModels ? "sonnet" : nil,
+                model: nil,
                 instructions: """
                 You are the Implementer. Follow the auditor's final-plan.md and produce implementation.md.
+                There is a single implementer for the mesh; execute the merged plan only.
                 """,
                 done: .allOf([
                     .artifact("implementation.md"),
