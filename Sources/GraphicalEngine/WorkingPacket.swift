@@ -54,19 +54,11 @@ public enum WorkingPacketBuilder {
             lines.append("")
         }
         lines.append("## Required Outputs")
-        lines.append("Write artifacts into: \(nodeArtifacts.path)")
-        for check in node.done.checks {
-            switch check {
-            case .artifact(let path):
-                lines.append("- Create artifact file: \(path)")
-            case .shell(let command):
-                lines.append("- Satisfy shell check (cwd=node artifacts): \(command)")
-            case .routerNext:
-                lines.append("- Write next.json: {\"node_id\":\"...\",\"reason\":\"...\"}")
-            }
-        }
-        lines.append("")
-        lines.append("Also write summary.txt with a short handoff summary.")
+        lines.append(contentsOf: NodeArtifacts.requiredOutputLines(
+            for: node,
+            nodeArtifactsPath: nodeArtifacts.path,
+            org: project.org
+        ))
         return lines.joined(separator: "\n")
     }
 }

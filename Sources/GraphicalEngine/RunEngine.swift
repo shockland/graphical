@@ -26,6 +26,67 @@ public enum RunEngineError: Error, LocalizedError, Equatable {
         case .failed(let message): return message
         }
     }
+
+    public var recoverySuggestion: String? {
+        switch self {
+        case .invalidOrg:
+            return "Fix the workflow issues shown in the validation banner, then try Play again."
+        case .missingRunner:
+            return "Open Agents to add or fix that runner, or re-pick a coding tool."
+        case .missingEntry:
+            return "In Org, set an entry step for the workflow."
+        case .missingNode:
+            return "In Org, restore the missing step or fix edges that point to it."
+        case .routerTargetNotAllowed:
+            return "Have the router choose a next hop that is on its allowlist, or widen the allowlist."
+        case .missingRouterNext:
+            return "Ensure the router step writes a valid next hop (next.json) before finishing."
+        case .noOutgoingEdge:
+            return "In Org, add a success edge from that step to the next step."
+        case .cancelled:
+            return nil
+        case .failed(let message):
+            return Self.recoverySuggestion(forFailedMessage: message)
+        }
+    }
+
+    /// Recovery copy for free-form `.failed` messages thrown mid-run.
+    static func recoverySuggestion(forFailedMessage message: String) -> String? {
+        let lower = message.lowercased()
+        if lower.contains("exhausted iterations") || lower.contains("without passing done-checks") {
+            return "Retry the step, loosen that step's done-checks, or raise maxIterations."
+        }
+        if lower.contains("on: reject") || lower.contains("reject.json") {
+            return "In Org, add an outgoing edge with on: reject from that step."
+        }
+        if lower.contains("no pending approval") {
+            return "Start or resume a run that pauses for approval, then Approve or Reject."
+        }
+        if lower.contains("no active node to retry") || lower.contains("can only retry") {
+            return "Retry only works after a failed or cancelled run that still has an active step."
+        }
+        return "Open History for this run to inspect the failing step, then Retry or fix the workflow."
+    }
+
+    /// Builds the exhaustion failure message used when a node burns its iteration budget.
+    public static func exhaustedIterationsMessage(
+        role: String,
+        nodeId: String,
+        failedChecks: [String]
+    ) -> String {
+        let label = role.isEmpty ? nodeId : role
+        var message = "\(label) exhausted iterations without passing done-checks"
+        if !failedChecks.isEmpty {
+            message += " (still failing: \(failedChecks.joined(separator: ", ")))"
+        }
+        return message
+    }
+
+    /// Builds the reject-without-edge failure message.
+    public static func rejectWithoutEdgeMessage(role: String, nodeId: String) -> String {
+        let label = role.isEmpty ? nodeId : role
+        return "\(label) signaled reject.json but has no outgoing 'on: reject' edge"
+    }
 }
 
 public struct PendingApproval: Equatable, Sendable {
@@ -51,24 +112,43 @@ public actor RunEngine {
     public private(set) var currentIteration: Int?
 
     private let store: TraceStore
+    private let processRunner: any ProcessExecuting
     private let cli: CLIRunner
     private let checker: DoneCheckEvaluator
     private let fileManager: FileManager
+    /// How often to refresh phase/status while an agent CLI is running with little
+    /// or no stdout — keeps the Run console from looking frozen.
+    private let progressHeartbeatNanoseconds: UInt64
+    /// Emit a live-log "still working…" line every N heartbeats (0 = never).
+    private let progressHeartbeatLogEvery: Int
 
     private var cancelRequested = false
     private var project: GraphicalProject?
     /// Inbound handoff retained across approval pause for retry after approve.
     private var pausedInbound: HandoffContract?
+    /// Last non-nil inbound handoff a node was actually entered with, keyed by node id.
+    /// Lets `retryActiveNode` re-enter a failed mid-graph node without dropping the
+    /// prior summary/artifacts it was given (see plan 008).
+    private var lastInboundByNode: [String: HandoffContract] = [:]
     private var progressHandler: (@Sendable (RunProgressSnapshot) async -> Void)?
+    private var invokeHeartbeatTask: Task<Void, Never>?
+    private var invokeStartedAt: Date?
+    private var agentOutputReceived = false
+    private var invokeNodeId: String?
 
     public init(
         store: TraceStore,
-        processRunner: any ProcessExecuting = ProcessRunner()
+        processRunner: any ProcessExecuting = ProcessRunner(),
+        progressHeartbeatNanoseconds: UInt64 = 2_000_000_000,
+        progressHeartbeatLogEvery: Int = 5
     ) {
         self.store = store
+        self.processRunner = processRunner
         self.cli = CLIRunner(processRunner: processRunner)
         self.checker = DoneCheckEvaluator(processRunner: processRunner)
         self.fileManager = .default
+        self.progressHeartbeatNanoseconds = progressHeartbeatNanoseconds
+        self.progressHeartbeatLogEvery = progressHeartbeatLogEvery
     }
 
     public func setProgressHandler(_ handler: (@Sendable (RunProgressSnapshot) async -> Void)?) {
@@ -100,6 +180,8 @@ public actor RunEngine {
         pendingApproval = nil
         lastInspection = nil
         pausedInbound = nil
+        lastInboundByNode = [:]
+        stopInvokeHeartbeat()
         liveLog = []
         currentPhase = "starting"
         currentIteration = nil
@@ -175,6 +257,10 @@ public actor RunEngine {
 
     public func cancel() async throws {
         cancelRequested = true
+        processRunner.cancelCurrent()
+        stopInvokeHeartbeat()
+        currentPhase = "cancelling"
+        await publishProgress()
         if var run = currentRun {
             run.status = .cancelled
             run.updatedAt = Date()
@@ -197,7 +283,7 @@ public actor RunEngine {
         try await store.saveRun(run)
         currentRun = run
         try await trace(runId: run.id, kind: .retry, message: "Retrying node \(nodeId)", nodeId: nodeId)
-        try await executeFrom(nodeId: nodeId, inbound: nil, run: &run, project: project)
+        try await executeFrom(nodeId: nodeId, inbound: lastInboundByNode[nodeId], run: &run, project: project)
     }
 
     // MARK: - Core loop
@@ -217,7 +303,12 @@ public actor RunEngine {
             throw RunEngineError.missingRunner(node.runner)
         }
 
+        if let inbound {
+            lastInboundByNode[nodeId] = inbound
+        }
+
         run.activeNodeId = nodeId
+        try throwIfCancelled()
         run.status = .running
         run.updatedAt = Date()
         try await store.saveRun(run)
@@ -234,7 +325,7 @@ public actor RunEngine {
         )
         try fileManager.createDirectory(at: nodeArtifacts, withIntermediateDirectories: true)
 
-        var missingHints: [String] = node.done.checks.map { checkLabel($0) }
+        var missingHints: [String] = node.done.checks.map(\.displayName)
         var lastChecks: [CheckResult] = []
         var routerNext: RouterNext?
         var succeeded = false
@@ -251,8 +342,8 @@ public actor RunEngine {
                 nodeId: nodeId,
                 iteration: iteration
             )
-            currentPhase = "invoking agent"
             currentIteration = iteration
+            currentPhase = "preparing packet"
             log("[\(nodeId)] iteration \(iteration)/\(node.maxIterations)")
             await publishProgress()
 
@@ -268,6 +359,9 @@ public actor RunEngine {
                 modelHint: effectiveModel
             )
             let promptURL = nodeArtifacts.appendingPathComponent("packet-\(iteration).md")
+            log("[\(nodeId)] writing working packet…")
+            currentPhase = "writing packet"
+            await publishProgress()
             try packet.write(to: promptURL, atomically: true, encoding: .utf8)
 
             let context = RunnerContext(
@@ -280,7 +374,32 @@ public actor RunEngine {
                 model: effectiveModel
             )
 
-            let result = try await cli.invoke(template: runner, context: context, timeoutSeconds: timeout)
+            var launchLine = "[\(nodeId)] launching \(node.runner)"
+            if let model = effectiveModel, !model.isEmpty {
+                launchLine += " · model \(model)"
+            }
+            log(launchLine)
+            currentPhase = "launching agent"
+            await publishProgress()
+
+            startInvokeHeartbeat(nodeId: nodeId)
+            await publishProgress()
+            let result: ProcessResult
+            do {
+                result = try await cli.invoke(
+                    template: runner,
+                    context: context,
+                    timeoutSeconds: timeout,
+                    onOutput: { [weak self] chunk in
+                        await self?.streamAgentOutput(chunk, nodeId: nodeId)
+                    }
+                )
+            } catch {
+                stopInvokeHeartbeat()
+                throw error
+            }
+            stopInvokeHeartbeat()
+            try throwIfCancelled()
             try await trace(
                 runId: run.id,
                 kind: .cliFinished,
@@ -289,24 +408,27 @@ public actor RunEngine {
                     : "CLI exit \(result.exitCode)",
                 nodeId: nodeId,
                 iteration: iteration,
-                payloadJSON: encodeJSON([
-                    "exitCode": result.exitCode,
-                    "timedOut": result.timedOut,
-                    "stdout": String(result.stdout.prefix(2000)),
-                    "stderr": String(result.stderr.prefix(2000))
-                ])
+                payloadJSON: encodeJSON(
+                    cliFinishedPayload(result: result, includeOutput: project.config.traceCLIOutput)
+                )
             )
-            log("[\(nodeId)] cli exit \(result.exitCode)")
+            if result.timedOut {
+                log("[\(nodeId)] cli timed out")
+            } else {
+                log("[\(nodeId)] cli exit \(result.exitCode)")
+            }
             currentPhase = "evaluating checks"
+            log("[\(nodeId)] evaluating done-checks…")
             await publishProgress()
 
-            routerNext = loadRouterNext(from: nodeArtifacts)
+            routerNext = NodeArtifacts.loadRouterNext(from: nodeArtifacts)
             let evaluation = await checker.evaluate(
                 group: node.done,
                 nodeArtifacts: nodeArtifacts,
                 projectRoot: project.root,
                 routerNext: routerNext
             )
+            try throwIfCancelled()
             lastChecks = evaluation.results
             try await trace(
                 runId: run.id,
@@ -338,7 +460,7 @@ public actor RunEngine {
                     message: "Escalating to \(to) after budget exhausted",
                     nodeId: nodeId
                 )
-                let contract = buildContract(
+                let contract = NodeArtifacts.buildContract(
                     nodeArtifacts: nodeArtifacts,
                     checks: lastChecks,
                     routerNext: routerNext,
@@ -354,6 +476,7 @@ public actor RunEngine {
                 return
             }
 
+            try throwIfCancelled()
             run.status = .failed
             run.updatedAt = Date()
             try await store.saveRun(run)
@@ -365,7 +488,13 @@ public actor RunEngine {
                 nodeId: nodeId
             )
             try await trace(runId: run.id, kind: .runFailed, message: "Run failed at \(nodeId)")
-            throw RunEngineError.failed("Node \(nodeId) exhausted iterations without passing done-checks")
+            throw RunEngineError.failed(
+                RunEngineError.exhaustedIterationsMessage(
+                    role: node.role,
+                    nodeId: nodeId,
+                    failedChecks: missingHints
+                )
+            )
         }
 
         try await trace(
@@ -375,16 +504,34 @@ public actor RunEngine {
             nodeId: nodeId
         )
 
-        let contract = buildContract(
+        let contract = NodeArtifacts.buildContract(
             nodeArtifacts: nodeArtifacts,
             checks: lastChecks,
             routerNext: routerNext,
             summaryFallback: "\(node.role) completed"
         )
 
-        // Terminal node? no success/always outgoing edges and not router needing hop
-        let successEdges = project.org.outgoingEdges(from: nodeId).filter { $0.on == .success || $0.on == .always }
+        // Reject routing (plan 009 / plans/009-decision.md): a node whose done-checks
+        // passed can still signal "send this back" by writing reject.json. Checked
+        // before success routing; absent (or reject: false) falls through unchanged.
+        if let reject = NodeArtifacts.loadReject(from: nodeArtifacts), reject.reject {
+            try await routeReject(
+                reject: reject,
+                from: node,
+                contract: contract,
+                routerNext: routerNext,
+                nodeArtifacts: nodeArtifacts,
+                run: &run,
+                project: project
+            )
+            return
+        }
+
+        // Terminal node? no success/always outgoing edges
+        let outgoing = project.org.outgoingEdges(from: nodeId)
+        let successEdges = outgoing.filter { $0.on == .success || $0.on == .always }
         if successEdges.isEmpty {
+            try throwIfCancelled()
             run.status = .succeeded
             run.activeNodeId = nil
             run.updatedAt = Date()
@@ -398,36 +545,28 @@ public actor RunEngine {
             return
         }
 
-        // Pick edge
-        let edge: OrgEdge
-        let destination: String
-        if let routerEdge = successEdges.first(where: { $0.type == .router }) {
-            guard let next = routerNext ?? loadRouterNext(from: nodeArtifacts) else {
-                throw RunEngineError.missingRouterNext
-            }
-            guard routerEdge.targets.contains(next.nodeId) else {
-                throw RunEngineError.routerTargetNotAllowed(next.nodeId)
-            }
-            edge = routerEdge
-            destination = next.nodeId
+        let selection = try selectOutgoingEdge(
+            outgoing: outgoing,
+            on: [.success, .always],
+            nodeId: nodeId,
+            routerNext: routerNext,
+            nodeArtifacts: nodeArtifacts
+        )
+        if let next = selection.chosenRouterNext {
             try await trace(
                 runId: run.id,
                 kind: .routed,
-                message: "Router chose \(destination): \(next.reason)",
+                message: "Router chose \(selection.destination): \(next.reason)",
                 nodeId: nodeId,
                 payloadJSON: encodeJSON(next)
             )
-        } else if let fixed = successEdges.first(where: { $0.type == .fixed }), let to = fixed.to {
-            edge = fixed
-            destination = to
+        } else {
             try await trace(
                 runId: run.id,
                 kind: .routed,
-                message: "Fixed edge to \(destination)",
+                message: "Fixed edge to \(selection.destination)",
                 nodeId: nodeId
             )
-        } else {
-            throw RunEngineError.noOutgoingEdge(nodeId)
         }
 
         var outbound = contract
@@ -437,12 +576,120 @@ public actor RunEngine {
 
         try await handoff(
             from: node,
-            edge: edge,
+            edge: selection.edge,
             contract: outbound,
-            forcedDestination: destination,
+            forcedDestination: selection.destination,
             run: &run,
             project: project
         )
+    }
+
+    /// Routes a node-level reject signal to its `on: .reject` edge(s). Fails the run
+    /// if reject was signaled but the node has no matching outgoing edge.
+    private func routeReject(
+        reject: RejectSignal,
+        from node: OrgNode,
+        contract: HandoffContract,
+        routerNext: RouterNext?,
+        nodeArtifacts: URL,
+        run: inout RunRecord,
+        project: GraphicalProject
+    ) async throws {
+        let outgoing = project.org.outgoingEdges(from: node.id)
+        let rejectEdges = outgoing.filter { $0.on == .reject }
+        guard !rejectEdges.isEmpty else {
+            try throwIfCancelled()
+            run.status = .failed
+            run.updatedAt = Date()
+            try await store.saveRun(run)
+            currentRun = run
+            try await trace(
+                runId: run.id,
+                kind: .nodeFailed,
+                message: "Node \(node.id) signaled reject but has no outgoing 'on: reject' edge",
+                nodeId: node.id
+            )
+            try await trace(runId: run.id, kind: .runFailed, message: "Run failed at \(node.id)")
+            throw RunEngineError.failed(
+                RunEngineError.rejectWithoutEdgeMessage(role: node.role, nodeId: node.id)
+            )
+        }
+
+        var rejectContract = contract
+        if let reason = reject.reason, !reason.isEmpty {
+            rejectContract.notes = reason
+        }
+        try await trace(
+            runId: run.id,
+            kind: .rejected,
+            message: "Node \(node.id) signaled reject: \(reject.reason ?? "")",
+            nodeId: node.id
+        )
+
+        let selection = try selectOutgoingEdge(
+            outgoing: outgoing,
+            on: [.reject],
+            nodeId: node.id,
+            routerNext: routerNext,
+            nodeArtifacts: nodeArtifacts
+        )
+        if let next = selection.chosenRouterNext {
+            try await trace(
+                runId: run.id,
+                kind: .routed,
+                message: "Reject router chose \(selection.destination): \(next.reason)",
+                nodeId: node.id,
+                payloadJSON: encodeJSON(next)
+            )
+        } else {
+            try await trace(
+                runId: run.id,
+                kind: .routed,
+                message: "Reject edge to \(selection.destination)",
+                nodeId: node.id
+            )
+        }
+
+        var outbound = rejectContract
+        if let next = routerNext {
+            outbound.next = next
+        }
+
+        try await handoff(
+            from: node,
+            edge: selection.edge,
+            contract: outbound,
+            forcedDestination: selection.destination,
+            run: &run,
+            project: project
+        )
+    }
+
+    private func selectOutgoingEdge(
+        outgoing: [OrgEdge],
+        on: Set<EdgeCondition>,
+        nodeId: String,
+        routerNext: RouterNext?,
+        nodeArtifacts: URL
+    ) throws -> EdgeRouting.Selection {
+        do {
+            return try EdgeRouting.select(
+                outgoing: outgoing,
+                on: on,
+                nodeId: nodeId,
+                routerNext: routerNext,
+                loadRouterNext: { NodeArtifacts.loadRouterNext(from: nodeArtifacts) }
+            )
+        } catch let error as EdgeRouting.Error {
+            switch error {
+            case .missingRouterNext:
+                throw RunEngineError.missingRouterNext
+            case .routerTargetNotAllowed(let id):
+                throw RunEngineError.routerTargetNotAllowed(id)
+            case .noOutgoingEdge(let id):
+                throw RunEngineError.noOutgoingEdge(id)
+            }
+        }
     }
 
     private func handoff(
@@ -481,6 +728,7 @@ public actor RunEngine {
         )
 
         if edge.requiresApproval {
+            try throwIfCancelled()
             run.status = .awaitingApproval
             run.updatedAt = Date()
             try await store.saveRun(run)
@@ -505,51 +753,123 @@ public actor RunEngine {
 
     // MARK: - Helpers
 
-    private func buildContract(
-        nodeArtifacts: URL,
-        checks: [CheckResult],
-        routerNext: RouterNext?,
-        summaryFallback: String
-    ) -> HandoffContract {
-        let summaryURL = nodeArtifacts.appendingPathComponent("summary.txt")
-        let summary: String
-        if let text = try? String(contentsOf: summaryURL, encoding: .utf8), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            summary = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            summary = summaryFallback
-            try? summary.write(to: summaryURL, atomically: true, encoding: .utf8)
+    private func throwIfCancelled() throws {
+        if cancelRequested || currentRun?.status == .cancelled {
+            throw RunEngineError.cancelled
         }
-
-        let artifactFiles = (try? fileManager.contentsOfDirectory(atPath: nodeArtifacts.path)) ?? []
-        let artifacts = artifactFiles
-            .filter { !$0.hasPrefix("packet-") && $0 != "summary.txt" }
-            .map { nodeArtifacts.appendingPathComponent($0).path }
-
-        return HandoffContract(
-            summary: summary,
-            artifacts: artifacts,
-            checks: checks,
-            next: routerNext,
-            notes: nil
-        )
     }
 
-    private func loadRouterNext(from nodeArtifacts: URL) -> RouterNext? {
-        let url = nodeArtifacts.appendingPathComponent("next.json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(RouterNext.self, from: data)
-    }
-
-    private func checkLabel(_ check: DoneCheck) -> String {
-        switch check {
-        case .artifact(let path): return "artifact:\(path)"
-        case .shell(let command): return "shell:\(command)"
-        case .routerNext: return "router_next"
+    /// Trace payload for `.cliFinished`. Default (`includeOutput: false`, i.e.
+    /// `ProjectConfig.traceCLIOutput` unset) persists only sizes/exit status to the
+    /// durable SQLite trace store — never raw stdout/stderr, which routinely echoes
+    /// secrets. See plans/011-trace-output-redaction.md.
+    private func cliFinishedPayload(result: ProcessResult, includeOutput: Bool) -> [String: Any] {
+        var payload: [String: Any] = [
+            "exitCode": result.exitCode,
+            "timedOut": result.timedOut,
+            "truncated": result.truncated,
+            "stdoutBytes": result.stdout.utf8.count,
+            "stderrBytes": result.stderr.utf8.count
+        ]
+        if includeOutput {
+            payload["stdoutPreview"] = String(result.stdout.prefix(2000))
+            payload["stderrPreview"] = String(result.stderr.prefix(2000))
         }
+        return payload
     }
 
     private func log(_ line: String) {
         liveLog.append(line)
+    }
+
+    /// Agent output is intentionally kept in the in-memory live log only. Durable
+    /// traces continue to follow the redaction policy in `cliFinishedPayload`.
+    private func streamAgentOutput(_ chunk: ProcessOutputChunk, nodeId: String) async {
+        let normalized = chunk.text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        var lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        if lines.last?.isEmpty == true {
+            lines.removeLast()
+        }
+        guard !lines.isEmpty else { return }
+
+        if !agentOutputReceived {
+            agentOutputReceived = true
+            log("[\(nodeId)] receiving agent output…")
+            currentPhase = invokePhaseLabel()
+        }
+
+        let streamLabel = chunk.stream == .stdout ? "stdout" : "stderr"
+        for line in lines {
+            log("[\(nodeId) \(streamLabel)] \(line)")
+        }
+        await publishProgress()
+    }
+
+    private func startInvokeHeartbeat(nodeId: String) {
+        stopInvokeHeartbeat()
+        invokeNodeId = nodeId
+        invokeStartedAt = Date()
+        agentOutputReceived = false
+        currentPhase = invokePhaseLabel()
+        log("[\(nodeId)] waiting for agent output…")
+
+        let interval = progressHeartbeatNanoseconds
+        guard interval > 0 else { return }
+
+        invokeHeartbeatTask = Task { [weak self] in
+            guard let self else { return }
+            var ticks = 0
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: interval)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                ticks += 1
+                await self.invokeHeartbeatTick(ticks: ticks)
+            }
+        }
+    }
+
+    private func stopInvokeHeartbeat() {
+        invokeHeartbeatTask?.cancel()
+        invokeHeartbeatTask = nil
+        invokeStartedAt = nil
+        invokeNodeId = nil
+        agentOutputReceived = false
+    }
+
+    private func invokeHeartbeatTick(ticks: Int) async {
+        guard invokeHeartbeatTask != nil, let nodeId = invokeNodeId else { return }
+        currentPhase = invokePhaseLabel()
+        if progressHeartbeatLogEvery > 0, ticks % progressHeartbeatLogEvery == 0 {
+            let elapsed = invokeElapsedSeconds()
+            log("[\(nodeId)] still working… \(Self.formatElapsed(elapsed))")
+        }
+        await publishProgress()
+    }
+
+    private func invokePhaseLabel() -> String {
+        let elapsed = invokeElapsedSeconds()
+        let activity = agentOutputReceived ? "receiving agent output" : "waiting for agent"
+        return "\(activity) · \(Self.formatElapsed(elapsed))"
+    }
+
+    private func invokeElapsedSeconds() -> Int {
+        guard let started = invokeStartedAt else { return 0 }
+        return max(0, Int(Date().timeIntervalSince(started)))
+    }
+
+    private static func formatElapsed(_ seconds: Int) -> String {
+        let minutes = seconds / 60
+        let rem = seconds % 60
+        if minutes > 0 {
+            return String(format: "%d:%02d", minutes, rem)
+        }
+        return "\(seconds)s"
     }
 
     private func publishProgress() async {

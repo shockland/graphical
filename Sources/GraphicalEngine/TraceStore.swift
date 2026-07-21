@@ -147,12 +147,33 @@ public actor TraceStore {
                     "kind": event.kind.rawValue,
                     "message": event.message,
                     "iteration": event.iteration as Any,
-                    "payloadJSON": event.payloadJSON as Any,
+                    "payloadJSON": Self.redactLegacyOutputFields(event.payloadJSON) as Any,
                     "createdAt": ISO8601DateFormatter().string(from: event.createdAt)
                 ] as [String: Any]
             }
         ]
         return try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    /// Belt-and-suspenders redaction for rows written before plan 011: strips any
+    /// top-level `stdout`/`stderr` keys from a `.cliFinished` `payloadJSON` string on
+    /// export. Current writes never include those keys (see `RunEngine.cliFinishedPayload`);
+    /// existing databases may still have them from before this default changed.
+    private static func redactLegacyOutputFields(_ payloadJSON: String?) -> String? {
+        guard let payloadJSON,
+              let data = payloadJSON.data(using: .utf8),
+              var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["stdout"] != nil || object["stderr"] != nil
+        else {
+            return payloadJSON
+        }
+        object.removeValue(forKey: "stdout")
+        object.removeValue(forKey: "stderr")
+        object["redacted"] = "stdout/stderr removed on export (plan 011)"
+        guard let redacted = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return payloadJSON
+        }
+        return String(data: redacted, encoding: .utf8) ?? payloadJSON
     }
 
     private static func run(from row: Row) -> RunRecord {
