@@ -608,6 +608,21 @@ final class OrgCanvasView: NSView {
         CGPoint(x: (point.x - offset.x) / scale, y: (point.y - offset.y) / scale)
     }
 
+    private func setScale(_ newScale: CGFloat, anchoredAt viewPoint: CGPoint) {
+        let clampedScale = min(2.2, max(0.45, newScale))
+        // At clamp, keep offset unchanged so repeated zoom-in/out against the
+        // ceiling/floor doesn't re-anchor and drift the canvas under the cursor.
+        if abs(clampedScale - scale) < 1e-9 {
+            return
+        }
+        let canvasPoint = viewToCanvas(viewPoint)
+        scale = clampedScale
+        offset = CGPoint(
+            x: viewPoint.x - canvasPoint.x * clampedScale,
+            y: viewPoint.y - canvasPoint.y * clampedScale
+        )
+    }
+
     private func hitNode(at canvasPoint: CGPoint) -> String? {
         for node in org.nodes.reversed() {
             guard let pos = layout.nodes[node.id] else { continue }
@@ -767,8 +782,17 @@ final class OrgCanvasView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         if event.modifierFlags.contains(.command) {
-            let factor = event.deltaY > 0 ? 1.05 : 0.95
-            scale = min(2.2, max(0.45, scale * factor))
+            var delta = event.scrollingDeltaY
+            // Align with legacy deltaY>0 → zoom-in across natural vs classic scroll.
+            if event.isDirectionInvertedFromDevice {
+                delta = -delta
+            }
+            guard abs(delta) > 0.01 else { return }
+            // Magnitude-based factor; cap so trackpad momentum can't leap.
+            let capped = max(-25, min(25, delta))
+            let factor = exp(capped * 0.01)
+            let anchor = convert(event.locationInWindow, from: nil)
+            setScale(scale * factor, anchoredAt: anchor)
             needsDisplay = true
         } else {
             offset.x += event.scrollingDeltaX
@@ -778,7 +802,8 @@ final class OrgCanvasView: NSView {
     }
 
     override func magnify(with event: NSEvent) {
-        scale = min(2.2, max(0.45, scale * (1 + event.magnification)))
+        let anchor = convert(event.locationInWindow, from: nil)
+        setScale(scale * (1 + event.magnification), anchoredAt: anchor)
         needsDisplay = true
     }
 
