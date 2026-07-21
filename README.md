@@ -61,6 +61,22 @@ The engine vertical-slice test uses the seeded `echo_fixture` runner (no LLM req
 
 Runs and traces are stored in `~/Library/Application Support/Graphical/graphical.sqlite`.
 
+## Multi-user / git
+
+`.graphical/` is meant to be YAML-in-repo: roles, edges, instructions, and done-checks are the shared org graph. Do **not** gitignore the whole directory unless the team treats Graphical as personal tooling only.
+
+For multi-user repos, ignore runtime and UI-local files:
+
+```gitignore
+# Graphical — local / noisy
+.graphical/artifacts/
+.graphical/layout.yaml
+```
+
+The app can ensure the artifacts ignore via **Artifacts .gitignore** in the Run console (writes `.graphical/artifacts/.gitignore`).
+
+Per-node `runner` / `model` and `runners.yaml` often differ by machine (Cursor vs Claude, model picks). Either agree on one coding tool for the shared org, or expect diffs when each person rebinds tools after clone. `GOAL.md` / `project.yaml`'s live `goal` are also noisy during active work — commit them when the goal is a shared contract, not mid-run scratch.
+
 ## App flow
 
 1. **Create / Open** a project folder — Create (or Open of a folder without `.graphical`) opens a setup sheet: goal → coding tool, then lands on the **Workflow** canvas (Planner → Implementer → Reviewer). Setup does not auto-start a run.
