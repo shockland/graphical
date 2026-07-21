@@ -44,7 +44,7 @@ Per-node directory conventions (`next.json`, `reject.json`, `summary.txt`, `pack
 Pure mutations of the Org graph (insert/remove nodes, connect fixed/router/fan-out/join edges) shared by canvas and inspector.
 
 **Coding tool setup**:
-Applying a catalog preset: upsert the stable runner and rebind every Org node to it.
+Applying a catalog preset: upsert the stable runner and rebind Org nodes to it, skipping Planner nodes the user has customized (non-nil model or runner ≠ shared non-planner baseline).
 
 **Shell invocation**:
 POSIX shell interpreter (`bash`/`sh`/`zsh`) with `-c`/`-lc`, whose script body must be shell-escaped when templated.
