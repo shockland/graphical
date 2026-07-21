@@ -81,7 +81,7 @@ Per-node `runner` / `model` and `runners.yaml` often differ by machine (Cursor v
 
 1. **Create / Open** a project folder — Create (or Open of a folder without `.graphical`) opens a setup sheet: goal → coding tool, then lands on the **Workflow** canvas (Planner → Implementer → Reviewer). Setup does not auto-start a run.
 2. Edit **Workflow** nodes and edges (Save writes YAML), or press **Run workflow** from the Project Guide when ready
-3. Choose a **coding tool** via Project Guide or **Agents → Set up coding tool…** (preset wizard with install detection). The Agents tab still exposes raw CLI templates for power users
+3. Choose a **coding tool** via Project Guide or **Agents → Set up coding tool…** (preset wizard with install detection). The Agents tab still exposes raw CLI templates for power users. Cursor presets include `--output-format stream-json --stream-partial-output` so the Run console can show incremental agent text; existing project `runners.yaml` entries need those flags added under `-p` to get the same live feedback (durable traces stay redacted unless `traceCLIOutput` is enabled).
 4. **Run** with a goal; approve the gated Planner → Implementer handoff (first-run tips explain approval vs reject edges)
 5. Inspect **History** and export JSON
 

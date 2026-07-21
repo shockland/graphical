@@ -138,7 +138,7 @@ public enum AgentPresetCatalog {
                 """
                 set -euo pipefail
                 export PATH="$HOME/.local/bin:$PATH"
-                cursor-agent -p --trust --force --workspace {{project_root}} --model {{model}} "$(cat {{prompt_file}})"
+                cursor-agent -p --output-format stream-json --stream-partial-output --trust --force --workspace {{project_root}} --model {{model}} "$(cat {{prompt_file}})"
                 """
             ],
             cwd: "{{project_root}}",

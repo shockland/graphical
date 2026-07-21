@@ -3,6 +3,15 @@ import XCTest
 @testable import GraphicalDomain
 
 final class AgentPresetCatalogTests: XCTestCase {
+    func testCursorPresetEnablesStreamJSONPartialOutput() {
+        let script = AgentPresetCatalog.cursorAgent.makeRunnerTemplate().args.last ?? ""
+        XCTAssertTrue(script.contains("--output-format stream-json"), script)
+        XCTAssertTrue(script.contains("--stream-partial-output"), script)
+        let seed = SeedTemplate.defaultRunners().runners["cursor_agent"]?.args.last ?? ""
+        XCTAssertTrue(seed.contains("--output-format stream-json"), seed)
+        XCTAssertTrue(seed.contains("--stream-partial-output"), seed)
+    }
+
     func testCatalogHasStablePresetsAndFactories() {
         XCTAssertEqual(AgentPresetCatalog.all.map(\.id), [
             "demo",
