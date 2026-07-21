@@ -67,6 +67,59 @@ public struct RunProgressCopy: Equatable, Sendable {
             )
         }
 
+        // Terminal statuses win over isRunning. The session may briefly report
+        // isRunning=true after the engine has already written .succeeded/.failed
+        // (phase "completed" → "finishing"); prefer the outcome, not the spinner.
+        if status == .succeeded {
+            let headline = "Done — all steps finished"
+            let detail = "Open History if you want to inspect handoffs and artifacts"
+            return RunProgressCopy(
+                headline: headline,
+                detail: detail,
+                statusBar: "Done — all steps finished",
+                runInfo: runInfoLine(
+                    status: "succeeded",
+                    role: nil,
+                    attempt: nil,
+                    next: nil,
+                    phase: nil,
+                    runId: runId
+                )
+            )
+        }
+        if status == .failed {
+            let at = role.map { " at \($0)" } ?? ""
+            let headline = "Run failed\(at)"
+            return RunProgressCopy(
+                headline: headline,
+                detail: "Use Retry Step to try again, or open History to inspect what failed",
+                statusBar: "Run failed\(at)",
+                runInfo: runInfoLine(
+                    status: "failed",
+                    role: role,
+                    attempt: nil,
+                    next: nil,
+                    phase: nil,
+                    runId: runId
+                )
+            )
+        }
+        if status == .cancelled {
+            return RunProgressCopy(
+                headline: "Run cancelled",
+                detail: "Press Play to start again, or Retry Step to resume the last active step",
+                statusBar: "Run cancelled",
+                runInfo: runInfoLine(
+                    status: "cancelled",
+                    role: role,
+                    attempt: nil,
+                    next: nil,
+                    phase: nil,
+                    runId: runId
+                )
+            )
+        }
+
         if isRunning {
             let who = role.map { "\($0) is working" } ?? "Working"
             var headParts = [who]
@@ -93,61 +146,13 @@ public struct RunProgressCopy: Equatable, Sendable {
             )
         }
 
-        switch status {
-        case .succeeded:
-            let headline = "Done — all steps finished"
-            let detail = "Open History if you want to inspect handoffs and artifacts"
-            return RunProgressCopy(
-                headline: headline,
-                detail: detail,
-                statusBar: "Done — all steps finished",
-                runInfo: runInfoLine(
-                    status: "succeeded",
-                    role: nil,
-                    attempt: nil,
-                    next: nil,
-                    phase: nil,
-                    runId: runId
-                )
-            )
-        case .failed:
-            let at = role.map { " at \($0)" } ?? ""
-            let headline = "Run failed\(at)"
-            return RunProgressCopy(
-                headline: headline,
-                detail: "Use Retry Step to try again, or open History to inspect what failed",
-                statusBar: "Run failed\(at)",
-                runInfo: runInfoLine(
-                    status: "failed",
-                    role: role,
-                    attempt: nil,
-                    next: nil,
-                    phase: nil,
-                    runId: runId
-                )
-            )
-        case .cancelled:
-            return RunProgressCopy(
-                headline: "Run cancelled",
-                detail: "Press Play to start again, or Retry Step to resume the last active step",
-                statusBar: "Run cancelled",
-                runInfo: runInfoLine(
-                    status: "cancelled",
-                    role: role,
-                    attempt: nil,
-                    next: nil,
-                    phase: nil,
-                    runId: runId
-                )
-            )
-        case .pending, .running, .awaitingApproval, .none:
-            return RunProgressCopy(
-                headline: "Ready",
-                detail: "Enter a goal, then choose Play",
-                statusBar: "Ready",
-                runInfo: "Ready. Enter a goal, then choose Play."
-            )
-        }
+        // Idle / not yet started (terminal + awaitingApproval handled above).
+        return RunProgressCopy(
+            headline: "Ready",
+            detail: "Enter a goal, then choose Play",
+            statusBar: "Ready",
+            runInfo: "Ready. Enter a goal, then choose Play."
+        )
     }
 
     // MARK: - Pieces

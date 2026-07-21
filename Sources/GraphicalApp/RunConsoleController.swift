@@ -22,6 +22,11 @@ final class RunConsoleController: NSObject {
     private let approveButton: PrimaryButton
     private let rejectButton: PrimaryButton
     private let handoffStack = NSStackView()
+    private let headerStack = NSStackView()
+    private let subtitleLabel = AppKitText.label(
+        "Runs Planner → Implementer → Reviewer from the entry step using each node’s coding tool.",
+        style: .muted
+    )
     private var pulseLayer: CALayer?
     private var pulseTimer: Timer?
     /// Identity of the last-rendered handoff inspection (plans/013), so repeated
@@ -66,15 +71,12 @@ final class RunConsoleController: NSObject {
         right.layer?.backgroundColor = Theme.surface.cgColor
 
         let title = AppKitText.label("Run Console", style: .title)
-        let subtitle = AppKitText.label(
-            "Runs Planner → Implementer → Reviewer from the entry step using each node’s coding tool.",
-            style: .muted
-        )
-        subtitle.maximumNumberOfLines = 2
+        AppKitText.configureWrapping(subtitleLabel, maxLines: 2)
         let goalScroll = wrap(goalView, height: 100)
         goalView.isRichText = false
         goalView.font = Theme.bodyFont()
         goalView.delegate = self
+        AppKitText.configureWrappingTextView(goalView)
 
         let gitignore = PrimaryButton(title: "Artifacts .gitignore", style: .ghost, target: self, action: #selector(gitignore))
         let buttons = NSStackView(views: [playButton, cancelButton, retryButton, gitignore])
@@ -85,11 +87,11 @@ final class RunConsoleController: NSObject {
         approvalBox.layer?.backgroundColor = Theme.warningSoft.cgColor
         approvalBox.layer?.cornerRadius = Theme.controlRadius
         approvalBox.translatesAutoresizingMaskIntoConstraints = false
-        approvalLabel.maximumNumberOfLines = 0
+        AppKitText.configureWrapping(approvalLabel)
         approvalCoachLabel.textColor = Theme.muted
-        approvalCoachLabel.maximumNumberOfLines = 0
-        approvalCoachLabel.lineBreakMode = .byWordWrapping
+        AppKitText.configureWrapping(approvalCoachLabel)
         approvalCoachLabel.isHidden = true
+        AppKitText.configureWrapping(runInfo, maxLines: 3)
         let approvalButtons = NSStackView(views: [approveButton, rejectButton])
         approvalButtons.orientation = .horizontal
         approvalButtons.spacing = 8
@@ -116,18 +118,14 @@ final class RunConsoleController: NSObject {
         activitySpinner.isDisplayedWhenStopped = false
         activitySpinner.translatesAutoresizingMaskIntoConstraints = false
         activityLabel.textColor = Theme.accent
-        activityLabel.maximumNumberOfLines = 4
-        activityLabel.lineBreakMode = .byWordWrapping
-        activityLabel.usesSingleLineMode = false
-        activityLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        activityLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        AppKitText.configureWrapping(activityLabel, maxLines: 4)
         activityRow.orientation = .horizontal
         activityRow.alignment = .top
         activityRow.spacing = 8
         activityRow.translatesAutoresizingMaskIntoConstraints = false
         activityRow.addArrangedSubview(activitySpinner)
         activityRow.addArrangedSubview(activityLabel)
-        activityRow.setHuggingPriority(.defaultHigh, for: .horizontal)
+        activityRow.setHuggingPriority(.defaultLow, for: .horizontal)
         activityRow.isHidden = true
         let logHeaderStack = NSStackView(views: [logTitle, activityRow])
         logHeaderStack.orientation = .vertical
@@ -135,15 +133,15 @@ final class RunConsoleController: NSObject {
         logHeaderStack.spacing = 6
         logHeaderStack.translatesAutoresizingMaskIntoConstraints = false
         logHeaderStack.setContentHuggingPriority(.required, for: .vertical)
-        let headerStack = NSStackView(views: [
-            title, subtitle, goalLabel, goalScroll, buttons, runInfo, approvalBox
-        ])
         headerStack.orientation = .vertical
         headerStack.alignment = .leading
         headerStack.spacing = 12
         headerStack.translatesAutoresizingMaskIntoConstraints = false
         headerStack.setContentHuggingPriority(.required, for: .vertical)
         headerStack.setContentCompressionResistancePriority(.required, for: .vertical)
+        for subview in [title, subtitleLabel, goalLabel, goalScroll, buttons, runInfo, approvalBox] as [NSView] {
+            headerStack.addArrangedSubview(subview)
+        }
         logView.setContentHuggingPriority(.defaultLow, for: .vertical)
         logView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         left.addSubview(headerStack)
@@ -233,6 +231,9 @@ final class RunConsoleController: NSObject {
             rightStack.widthAnchor.constraint(equalTo: handoffScroll.widthAnchor),
 
             goalScroll.widthAnchor.constraint(equalTo: headerStack.widthAnchor),
+            subtitleLabel.widthAnchor.constraint(equalTo: headerStack.widthAnchor),
+            runInfo.widthAnchor.constraint(equalTo: headerStack.widthAnchor),
+            activityRow.widthAnchor.constraint(equalTo: logHeaderStack.widthAnchor),
             approvalWidth,
             handoffStack.widthAnchor.constraint(equalTo: rightStack.widthAnchor, constant: -32)
         ])
@@ -256,6 +257,7 @@ final class RunConsoleController: NSObject {
         updateApprovalBox()
         rebuildHandoffIfChanged(model.lastInspection ?? model.pendingApproval?.inspection)
         updatePulse(model.isRunning)
+        updateWrapWidths()
     }
 
     /// Scoped update for run-progress ticks (plans/013): skips the goal-editor
@@ -269,21 +271,58 @@ final class RunConsoleController: NSObject {
         updateApprovalBox()
         rebuildHandoffIfChanged(model.lastInspection ?? model.pendingApproval?.inspection)
         updatePulse(model.isRunning)
+        updateWrapWidths()
+    }
+
+    /// Long agent/handoff strings must not report an unwrapped intrinsic width, or
+    /// Auto Layout grows the window (NSWindow maxSize only caps user resize).
+    private func updateWrapWidths() {
+        view.layoutSubtreeIfNeeded()
+        let leftWidth = max(logView.bounds.width, headerStack.bounds.width, 240)
+        subtitleLabel.preferredMaxLayoutWidth = leftWidth
+        runInfo.preferredMaxLayoutWidth = leftWidth
+        approvalLabel.preferredMaxLayoutWidth = max(approvalBox.bounds.width - 24, leftWidth - 24, 200)
+        approvalCoachLabel.preferredMaxLayoutWidth = approvalLabel.preferredMaxLayoutWidth
+        activityLabel.preferredMaxLayoutWidth = max(activityRow.bounds.width - 28, leftWidth - 8, 240)
+
+        let handoffWidth = max(handoffStack.bounds.width, 160)
+        setPreferredMaxLayoutWidth(in: handoffStack, width: handoffWidth)
+        // Second pass: intrinsic sizes change after preferredMaxLayoutWidth updates.
+        view.layoutSubtreeIfNeeded()
+    }
+
+    private func addHandoffRow(_ child: NSView) {
+        handoffStack.addArrangedSubview(child)
+        child.widthAnchor.constraint(equalTo: handoffStack.widthAnchor).isActive = true
+    }
+
+    private func setPreferredMaxLayoutWidth(in root: NSView, width: CGFloat) {
+        if let label = root as? NSTextField {
+            label.preferredMaxLayoutWidth = width
+        }
+        for subview in root.subviews {
+            setPreferredMaxLayoutWidth(in: subview, width: width)
+        }
     }
 
     private func updateRunInfo() {
         let copy = model.runProgressCopy()
-        runInfo.stringValue = copy.runInfo
-        if model.isRunning {
-            runInfo.textColor = Theme.accent
-        } else if model.run?.status == .succeeded {
-            runInfo.textColor = Theme.accent
-        } else if model.run?.status == .failed {
-            runInfo.textColor = Theme.danger
-        } else if model.run?.status == .awaitingApproval || model.pendingApproval != nil {
-            runInfo.textColor = Theme.warning
-        } else {
+        // Progress/outcome copy lives in the Live Run activity strip; keep this
+        // label only for the idle "Ready…" hint under Play so we don't show
+        // the same green status twice.
+        let showIdleHint = !model.isRunning
+            && model.run?.status != .succeeded
+            && model.run?.status != .failed
+            && model.run?.status != .cancelled
+            && model.run?.status != .awaitingApproval
+            && model.pendingApproval == nil
+        if showIdleHint {
+            runInfo.isHidden = false
+            runInfo.stringValue = copy.runInfo
             runInfo.textColor = Theme.muted
+        } else {
+            runInfo.isHidden = true
+            runInfo.stringValue = ""
         }
     }
 
@@ -293,9 +332,6 @@ final class RunConsoleController: NSObject {
         let failed = model.run?.status == .failed && !model.isRunning
         let succeeded = model.run?.status == .succeeded && !model.isRunning
         let cancelled = model.run?.status == .cancelled && !model.isRunning
-        let wrapWidth = max(activityRow.bounds.width - 28, logView.bounds.width - 8, 240)
-        activityLabel.preferredMaxLayoutWidth = wrapWidth
-
         if model.isRunning {
             activityRow.isHidden = false
             activitySpinner.startAnimation(nil)
@@ -411,46 +447,60 @@ final class RunConsoleController: NSObject {
             $0.removeFromSuperview()
         }
         guard let inspection else {
-            handoffStack.addArrangedSubview(AppKitText.label(
+            addHandoffRow(wrappingHandoffLabel(
                 "Choose Play to see what Planner passes to Implementer, then onward to Reviewer.",
                 style: .muted
             ))
             return
         }
         if showHistoryCoachForCurrentHandoff {
-            handoffStack.addArrangedSubview(makeHistoryCoachRow())
+            addHandoffRow(makeHistoryCoachRow())
         }
-        handoffStack.addArrangedSubview(kv("Connection", inspection.edgeId))
-        handoffStack.addArrangedSubview(kv("From step", displayRole(for: inspection.fromNode)))
-        handoffStack.addArrangedSubview(kv("To step", displayRole(for: inspection.toNode)))
-        handoffStack.addArrangedSubview(kv("Approval", inspection.requiresApproval ? "required" : "auto"))
+        addHandoffRow(kv("Connection", inspection.edgeId))
+        addHandoffRow(kv("From step", displayRole(for: inspection.fromNode)))
+        addHandoffRow(kv("To step", displayRole(for: inspection.toNode)))
+        addHandoffRow(kv("Approval", inspection.requiresApproval ? "required" : "auto"))
         if let reason = inspection.nextHopReason {
-            handoffStack.addArrangedSubview(kv("Next hop reason", reason))
+            addHandoffRow(kv("Next hop reason", reason))
         }
-        handoffStack.addArrangedSubview(AppKitText.label("Included", style: .section))
-        handoffStack.addArrangedSubview(kv("Summary", inspection.passed.summary))
+        addHandoffRow(wrappingHandoffLabel("Included", style: .section))
+        addHandoffRow(kv("Summary", inspection.passed.summary))
         for path in inspection.passed.artifacts {
-            let label = AppKitText.label(path, style: .mono)
-            handoffStack.addArrangedSubview(label)
+            addHandoffRow(wrappingHandoffLabel(path, style: .mono, charWrap: true))
         }
         for check in inspection.passed.checks {
-            handoffStack.addArrangedSubview(AppKitText.label("\(check.passed ? "✓" : "✗") \(check.name)", style: .caption))
+            addHandoffRow(
+                wrappingHandoffLabel("\(check.passed ? "✓" : "✗") \(check.name)", style: .caption)
+            )
         }
-        handoffStack.addArrangedSubview(AppKitText.label("Not included", style: .section))
+        addHandoffRow(wrappingHandoffLabel("Not included", style: .section))
         if inspection.withheld.isEmpty {
-            handoffStack.addArrangedSubview(AppKitText.label("Everything needed was included.", style: .muted))
+            addHandoffRow(wrappingHandoffLabel("Everything needed was included.", style: .muted))
         } else {
             for field in inspection.withheld {
-                handoffStack.addArrangedSubview(AppKitText.label(field.rawValue, style: .caption))
+                addHandoffRow(wrappingHandoffLabel(field.rawValue, style: .caption))
             }
         }
+    }
+
+    private func wrappingHandoffLabel(
+        _ value: String,
+        style: Theme.LabelStyle,
+        charWrap: Bool = false
+    ) -> NSTextField {
+        let label = AppKitText.label(value, style: style)
+        AppKitText.configureWrapping(
+            label,
+            lineBreakMode: charWrap ? .byCharWrapping : .byWordWrapping
+        )
+        label.setContentHuggingPriority(.defaultLow, for: .vertical)
+        return label
     }
 
     private func makeHistoryCoachRow() -> NSView {
         let tip = AppKitText.label(FirstRunCoach.historyTip, style: .caption)
         tip.textColor = Theme.muted
-        tip.maximumNumberOfLines = 3
-        tip.lineBreakMode = .byWordWrapping
+        AppKitText.configureWrapping(tip, maxLines: 3)
         let open = PrimaryButton(
             title: "Open History",
             style: .secondary,
@@ -462,7 +512,7 @@ final class RunConsoleController: NSObject {
         row.orientation = .vertical
         row.alignment = .leading
         row.spacing = 6
-        tip.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        tip.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
         return row
     }
 
@@ -477,10 +527,13 @@ final class RunConsoleController: NSObject {
         let k = AppKitText.label(key, style: .caption)
         k.textColor = Theme.muted
         let v = AppKitText.label(value, style: .body)
+        AppKitText.configureWrapping(v)
         let stack = NSStackView(views: [k, v])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
     }
 
@@ -514,6 +567,7 @@ final class RunConsoleController: NSObject {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.borderType = .bezelBorder
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
         scroll.documentView = textView
         let preferred = scroll.heightAnchor.constraint(equalToConstant: height)
         preferred.priority = .defaultHigh

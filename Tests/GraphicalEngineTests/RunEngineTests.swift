@@ -290,6 +290,54 @@ final class RunEngineTests: XCTestCase {
         XCTAssertEqual(current?.status, .cancelled)
     }
 
+    func testCancelAfterSucceededDoesNotOverwriteStatus() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graphical-cancel-after-success-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = try YAMLStore().createProject(at: root, name: "Terminal", seedTemplate: true)
+        project.org = OrgGraph(
+            nodes: [
+                OrgNode(
+                    id: "worker",
+                    role: "Worker",
+                    runner: "echo_fixture",
+                    done: .allOf([.artifact("plan.md")]),
+                    maxIterations: 1
+                )
+            ],
+            edges: [],
+            entry: "worker"
+        )
+        project.runners.runners["echo_fixture"] = RunnerTemplate(
+            command: "/bin/bash",
+            args: [
+                "-lc",
+                """
+                OUT={{node_artifacts}}
+                mkdir -p "$OUT"
+                echo ok > "$OUT/plan.md"
+                echo "Fixture runner completed"
+                """
+            ],
+            cwd: "{{project_root}}"
+        )
+
+        let store = try TraceStore(inMemory: true)
+        let engine = RunEngine(store: store)
+        let run = try await engine.start(project: project, goal: "finish then cancel")
+        XCTAssertEqual(run.status, .succeeded)
+
+        try await engine.cancel()
+        let current = await engine.currentRun
+        XCTAssertEqual(current?.status, .succeeded)
+
+        let events = try await store.events(runId: run.id)
+        XCTAssertTrue(events.contains { $0.kind == .runSucceeded })
+        XCTAssertFalse(events.contains { $0.kind == .runCancelled })
+    }
+
     func testCancelDuringInvokeStaysCancelled() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("graphical-cancel-invoke-\(UUID().uuidString)", isDirectory: true)

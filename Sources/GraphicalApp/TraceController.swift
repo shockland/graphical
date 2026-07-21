@@ -47,11 +47,13 @@ final class TraceController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         detail.textColor = Theme.text
         detail.backgroundColor = Theme.surface
         detail.textContainerInset = NSSize(width: 12, height: 12)
+        AppKitText.configureWrappingTextView(detail)
 
         let detailScroll = NSScrollView()
         detailScroll.translatesAutoresizingMaskIntoConstraints = false
         detailScroll.documentView = detail
         detailScroll.hasVerticalScroller = true
+        detailScroll.hasHorizontalScroller = false
         detailScroll.borderType = .bezelBorder
 
         view.addSubview(top)

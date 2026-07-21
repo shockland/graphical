@@ -103,6 +103,8 @@ final class StatusBarView: NSView {
         Theme.applyLabel(label, style: .muted)
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         spinner.style = .spinning
         spinner.controlSize = .small
@@ -182,9 +184,7 @@ final class MonoLogView: NSScrollView {
         textView.textColor = Theme.text
         textView.backgroundColor = Theme.surface
         textView.textContainerInset = NSSize(width: 8, height: 8)
-        textView.isHorizontallyResizable = false
-        textView.isVerticallyResizable = true
-        textView.textContainer?.widthTracksTextView = true
+        AppKitText.configureWrappingTextView(textView)
         documentView = textView
 
         jumpButton.bezelStyle = .rounded
@@ -202,6 +202,18 @@ final class MonoLogView: NSScrollView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        let width = max(contentSize.width, 1)
+        if textView.frame.width != width {
+            textView.frame.size.width = width
+        }
+        textView.textContainer?.containerSize = NSSize(
+            width: max(width - textView.textContainerInset.width * 2, 1),
+            height: CGFloat.greatestFiniteMagnitude
+        )
+    }
 
     private var isScrolledToBottom: Bool {
         let visible = contentView.documentVisibleRect
@@ -321,5 +333,36 @@ enum AppKitText {
         Theme.applyLabel(field, style: style)
         field.translatesAutoresizingMaskIntoConstraints = false
         return field
+    }
+
+    /// Prevents long strings from driving Auto Layout fitting width (and the window).
+    static func configureWrapping(
+        _ field: NSTextField,
+        maxLines: Int = 0,
+        lineBreakMode: NSLineBreakMode = .byWordWrapping
+    ) {
+        field.maximumNumberOfLines = maxLines
+        field.lineBreakMode = lineBreakMode
+        field.usesSingleLineMode = false
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    }
+
+    /// Standard vertical-only wrapping setup for log / detail text views.
+    static func configureWrappingTextView(_ textView: NSTextView) {
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.heightTracksTextView = false
+        textView.textContainer?.containerSize = NSSize(
+            width: 0,
+            height: CGFloat.greatestFiniteMagnitude
+        )
     }
 }

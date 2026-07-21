@@ -208,6 +208,13 @@ final class RunSession {
             }
             guard self.isCurrentRunSession(session), self.engine === engine else { return }
             self.recentRuns = (try? await traceStore.recentRuns()) ?? self.recentRuns
+            // Clear running state before onFinished notifies the UI. Otherwise the
+            // Run console paints "Working · finishing" (isRunning + phase completed)
+            // and never refreshes after beginOwnedTask later clears isRunning.
+            await engine.setProgressHandler(nil)
+            self.isRunning = false
+            self.runPhase = nil
+            self.runIteration = nil
             onFinished(status, errorMessage)
         }
     }

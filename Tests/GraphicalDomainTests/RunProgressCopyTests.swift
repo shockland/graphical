@@ -121,6 +121,24 @@ final class RunProgressCopyTests: XCTestCase {
         XCTAssertEqual(copy.statusBar, "Done — all steps finished")
     }
 
+    /// Session can still report isRunning while phase is "completed" ("finishing").
+    /// Terminal status must win so the console does not stick on a spinner.
+    func testSucceededWinsOverStaleIsRunningAndFinishingPhase() {
+        let copy = RunProgressCopy.make(
+            status: .succeeded,
+            activeNodeId: nil,
+            phase: "completed",
+            iteration: nil,
+            org: sampleOrg(),
+            runId: "E4165F79-11F3-4C9A-8BC7-7725896BF01E",
+            isRunning: true
+        )
+        XCTAssertEqual(copy.headline, "Done — all steps finished")
+        XCTAssertEqual(copy.statusBar, "Done — all steps finished")
+        XCTAssertFalse(copy.runInfo.contains("finishing"))
+        XCTAssertFalse(copy.headline.contains("Working"))
+    }
+
     func testActivityTextJoinsDetail() {
         let copy = RunProgressCopy(
             headline: "Planner is working",

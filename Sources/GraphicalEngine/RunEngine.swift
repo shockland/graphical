@@ -259,15 +259,18 @@ public actor RunEngine {
         cancelRequested = true
         processRunner.cancelCurrent()
         stopInvokeHeartbeat()
+        guard var run = currentRun else { return }
+        // Cancel is a stuck-UI escape hatch; never clobber a terminal outcome.
+        if run.status == .succeeded || run.status == .failed || run.status == .cancelled {
+            return
+        }
         currentPhase = "cancelling"
         await publishProgress()
-        if var run = currentRun {
-            run.status = .cancelled
-            run.updatedAt = Date()
-            try await store.saveRun(run)
-            currentRun = run
-            try await trace(runId: run.id, kind: .runCancelled, message: "Run cancelled")
-        }
+        run.status = .cancelled
+        run.updatedAt = Date()
+        try await store.saveRun(run)
+        currentRun = run
+        try await trace(runId: run.id, kind: .runCancelled, message: "Run cancelled")
     }
 
     public func retryActiveNode() async throws {
