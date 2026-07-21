@@ -2,6 +2,7 @@ nodes:
 - id: entry
   role: Coordinator
   runner: cursor_agent
+  model: cursor-grok-4.5-high-fast
   instructions: 'You are the mesh coordinator. Confirm the goal is ready, then write
     summary.txt.
 
@@ -10,15 +11,15 @@ nodes:
     all_of:
     - artifact: summary.txt
   max_iterations: 1
-  timeout_seconds: 30
 - id: planner-1
   role: Planner
   runner: cursor_agent
   model: cursor-grok-4.5-high
-  instructions: 'You are Planner lane 1 of 5. Produce plan.md with your approach to
-    the goal.
+  instructions: 'You are Planner lane 1 of 5. You have your own coding tool and model
+    (configured on this node). Read the goal and produce plan.md with your approach.
 
-    Write summary.txt with a one-sentence handoff for your interpreter.'
+    Also write summary.txt with exactly one sentence summarizing the plan for your
+    paired interpreter. Do not coordinate with other planner lanes.'
   done:
     all_of:
     - artifact: plan.md
@@ -27,158 +28,215 @@ nodes:
 - id: interpreter-1
   role: Interpreter
   runner: cursor_agent
-  instructions: 'You are Interpreter lane 1 of 5. Read plan.md from inbound artifacts.
+  model: cursor-grok-4.5-high
+  instructions: 'You are Interpreter lane 1 of 5. Read inbound plan.md from your paired
+    planner. Extract goals — do not re-plan.
 
-    Produce interpretation.md refining the attack plan for the auditor.
+    Produce interpretation.md with these required sections:
 
-    Write summary.txt for join handoff.'
+    - Plan goals (numbered list)
+
+    - Approach summary
+
+    - Risks / conflicts for auditor
+
+    Write summary.txt as one line stating the goal count (e.g. "3 goals extracted").'
   done:
     all_of:
     - artifact: interpretation.md
     - artifact: summary.txt
   max_iterations: 3
-  timeout_seconds: 30
 - id: planner-2
   role: Planner
   runner: cursor_agent
-  instructions: 'You are Planner lane 2 of 5. Produce plan.md with your approach to
-    the goal.
+  model: cursor-grok-4.5-high
+  instructions: 'You are Planner lane 2 of 5. You have your own coding tool and model
+    (configured on this node). Read the goal and produce plan.md with your approach.
 
-    Write summary.txt with a one-sentence handoff for your interpreter.'
+    Also write summary.txt with exactly one sentence summarizing the plan for your
+    paired interpreter. Do not coordinate with other planner lanes.'
   done:
     all_of:
     - artifact: plan.md
     - artifact: summary.txt
   max_iterations: 3
-  timeout_seconds: 30
 - id: interpreter-2
   role: Interpreter
   runner: cursor_agent
-  instructions: 'You are Interpreter lane 2 of 5. Read plan.md from inbound artifacts.
+  model: cursor-grok-4.5-high
+  instructions: 'You are Interpreter lane 2 of 5. Read inbound plan.md from your paired
+    planner. Extract goals — do not re-plan.
 
-    Produce interpretation.md refining the attack plan for the auditor.
+    Produce interpretation.md with these required sections:
 
-    Write summary.txt for join handoff.'
+    - Plan goals (numbered list)
+
+    - Approach summary
+
+    - Risks / conflicts for auditor
+
+    Write summary.txt as one line stating the goal count (e.g. "3 goals extracted").'
   done:
     all_of:
     - artifact: interpretation.md
     - artifact: summary.txt
   max_iterations: 3
-  timeout_seconds: 30
 - id: planner-3
   role: Planner
   runner: cursor_agent
-  instructions: 'You are Planner lane 3 of 5. Produce plan.md with your approach to
-    the goal.
+  model: cursor-grok-4.5-high
+  instructions: 'You are Planner lane 3 of 5. You have your own coding tool and model
+    (configured on this node). Read the goal and produce plan.md with your approach.
 
-    Write summary.txt with a one-sentence handoff for your interpreter.'
+    Also write summary.txt with exactly one sentence summarizing the plan for your
+    paired interpreter. Do not coordinate with other planner lanes.'
   done:
     all_of:
     - artifact: plan.md
     - artifact: summary.txt
   max_iterations: 3
-  timeout_seconds: 30
 - id: interpreter-3
   role: Interpreter
   runner: cursor_agent
-  instructions: 'You are Interpreter lane 3 of 5. Read plan.md from inbound artifacts.
+  model: cursor-grok-4.5-high
+  instructions: 'You are Interpreter lane 3 of 5. Read inbound plan.md from your paired
+    planner. Extract goals — do not re-plan.
 
-    Produce interpretation.md refining the attack plan for the auditor.
+    Produce interpretation.md with these required sections:
 
-    Write summary.txt for join handoff.'
+    - Plan goals (numbered list)
+
+    - Approach summary
+
+    - Risks / conflicts for auditor
+
+    Write summary.txt as one line stating the goal count (e.g. "3 goals extracted").'
   done:
     all_of:
     - artifact: interpretation.md
     - artifact: summary.txt
   max_iterations: 3
-  timeout_seconds: 30
 - id: planner-4
   role: Planner
   runner: cursor_agent
-  instructions: 'You are Planner lane 4 of 5. Produce plan.md with your approach to
-    the goal.
+  model: cursor-grok-4.5-high
+  instructions: 'You are Planner lane 4 of 5. You have your own coding tool and model
+    (configured on this node). Read the goal and produce plan.md with your approach.
 
-    Write summary.txt with a one-sentence handoff for your interpreter.'
+    Also write summary.txt with exactly one sentence summarizing the plan for your
+    paired interpreter. Do not coordinate with other planner lanes.'
   done:
     all_of:
     - artifact: plan.md
     - artifact: summary.txt
   max_iterations: 3
-  timeout_seconds: 30
 - id: interpreter-4
   role: Interpreter
   runner: cursor_agent
-  instructions: 'You are Interpreter lane 4 of 5. Read plan.md from inbound artifacts.
+  model: cursor-grok-4.5-high
+  instructions: 'You are Interpreter lane 4 of 5. Read inbound plan.md from your paired
+    planner. Extract goals — do not re-plan.
 
-    Produce interpretation.md refining the attack plan for the auditor.
+    Produce interpretation.md with these required sections:
 
-    Write summary.txt for join handoff.'
+    - Plan goals (numbered list)
+
+    - Approach summary
+
+    - Risks / conflicts for auditor
+
+    Write summary.txt as one line stating the goal count (e.g. "3 goals extracted").'
   done:
     all_of:
     - artifact: interpretation.md
     - artifact: summary.txt
   max_iterations: 3
-  timeout_seconds: 30
 - id: planner-5
   role: Planner
   runner: cursor_agent
-  instructions: 'You are Planner lane 5 of 5. Produce plan.md with your approach to
-    the goal.
+  model: cursor-grok-4.5-high
+  instructions: 'You are Planner lane 5 of 5. You have your own coding tool and model
+    (configured on this node). Read the goal and produce plan.md with your approach.
 
-    Write summary.txt with a one-sentence handoff for your interpreter.'
+    Also write summary.txt with exactly one sentence summarizing the plan for your
+    paired interpreter. Do not coordinate with other planner lanes.'
   done:
     all_of:
     - artifact: plan.md
     - artifact: summary.txt
   max_iterations: 3
-  timeout_seconds: 30
 - id: interpreter-5
   role: Interpreter
   runner: cursor_agent
-  instructions: 'You are Interpreter lane 5 of 5. Read plan.md from inbound artifacts.
+  model: cursor-grok-4.5-high
+  instructions: 'You are Interpreter lane 5 of 5. Read inbound plan.md from your paired
+    planner. Extract goals — do not re-plan.
 
-    Produce interpretation.md refining the attack plan for the auditor.
+    Produce interpretation.md with these required sections:
 
-    Write summary.txt for join handoff.'
+    - Plan goals (numbered list)
+
+    - Approach summary
+
+    - Risks / conflicts for auditor
+
+    Write summary.txt as one line stating the goal count (e.g. "3 goals extracted").'
   done:
     all_of:
     - artifact: interpretation.md
     - artifact: summary.txt
   max_iterations: 3
-  timeout_seconds: 30
 - id: auditor
   role: Auditor
   runner: cursor_agent
-  instructions: 'You are the Auditor. Review all interpreter inbound handoffs and
-    produce final-plan.md
+  model: cursor-grok-4.5-medium-fast
+  instructions: 'You are the Auditor. Read every interpreter inbound handoff (interpretation.md).
 
-    synthesizing one approach. Write summary.txt for the implementer (final plan only).'
+    Merge procedure: dedupe goals, resolve conflicts with recorded rationale, order by
+    dependency, then emit one final-plan.md with these required sections:
+
+    - Summary
+
+    - Merged Objectives
+
+    - Implementation Phases
+
+    - Acceptance Criteria
+
+    - Constraints
+
+    - Conflicts Resolved
+
+    - Out of Scope
+
+    Write summary.txt naming the chosen plan only (final plan for the implementer).'
   done:
     all_of:
     - artifact: final-plan.md
     - artifact: summary.txt
   max_iterations: 3
-  timeout_seconds: 30
 - id: implementer
   role: Implementer
   runner: cursor_agent
-  instructions: You are the Implementer. Follow the auditor's final-plan.md and produce
+  model: cursor-grok-4.5-high
+  instructions: 'You are the Implementer. Follow the auditor''s final-plan.md and produce
     implementation.md.
+
+    There is a single implementer for the mesh; execute the merged plan only.'
   done:
     all_of:
     - artifact: implementation.md
     - shell: test -f implementation.md
   max_iterations: 5
-  timeout_seconds: 30
 - id: report
   role: Report
   runner: cursor_agent
+  model: auto
   instructions: You are Report. Produce report.md summarizing the mesh run outcome.
   done:
     all_of:
     - artifact: report.md
   max_iterations: 2
-  timeout_seconds: 30
 edges:
 - id: entry-fanout
   from: entry
@@ -315,7 +373,7 @@ edges:
   - summary
   - artifacts
   - checks
-  requires_approval: true
+  requires_approval: false
 - id: implementer-to-report
   from: implementer
   to: report

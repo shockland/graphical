@@ -1,18 +1,4 @@
 runners:
-  cursor_agent:
-    command: /bin/bash
-    args:
-    - -lc
-    - 'set -euo pipefail
-
-      export PATH="$HOME/.local/bin:$PATH"
-
-      cursor-agent -p --output-format stream-json --stream-partial-output --trust
-      --force --workspace {{project_root}} --model {{model}} "$(cat {{prompt_file}})"'
-    cwd: '{{project_root}}'
-    env: {}
-    kind: cursor_agent
-    default_model: composer-2.5-fast
   claude_code:
     command: claude
     args:
@@ -50,3 +36,17 @@ runners:
     cwd: '{{project_root}}'
     env: {}
     kind: custom
+  cursor_agent:
+    command: /bin/bash
+    args:
+    - -lc
+    - 'set -euo pipefail
+
+      export PATH="$HOME/.local/bin:$PATH"
+
+      cursor-agent -p --output-format stream-json --stream-partial-output --trust
+      --force --workspace {{project_root}} --model {{model}} "$(cat {{prompt_file}})"'
+    cwd: '{{project_root}}'
+    env: {}
+    kind: cursor_agent
+    default_model: composer-2.5-fast
