@@ -3,51 +3,95 @@ import AppKit
 import UniformTypeIdentifiers
 import GraphicalDomain
 import GraphicalEngine
+import GraphicalCLI
 
 @MainActor
 protocol AppModelDelegate: AnyObject {
+    /// Full-fidelity change: project switch, org edits, validation, tab switch, etc.
+    /// Recipients should rebuild whatever depends on the changed state.
     func appModelDidChange(_ model: AppModel)
+    /// Scoped run-progress tick (new log lines / phase / iteration / pending approval)
+    /// fired many times per run. Recipients should update only run-status-adjacent UI
+    /// (status bar, top bar running state, run console) rather than rebuilding
+    /// unrelated workspaces (org canvas, trace list, runners) — see plans/013.
+    func appModelRunProgressDidChange(_ model: AppModel)
+    /// Unsaved-state or other chrome-only updates without rebuilding workspaces.
+    func appModelDirtyStateDidChange(_ model: AppModel)
 }
 
+/// App shell coordinator: chrome one-shots + thin facade over ProjectSession / RunSession.
 @MainActor
 final class AppModel {
     weak var delegate: AppModelDelegate?
 
-    private(set) var project: GraphicalProject?
-    private(set) var layout = CanvasLayout()
+    private let projectSession = ProjectSession()
+    private let runSession = RunSession()
+
+    private(set) var errorMessage: String?
+    private(set) var statusMessage: String?
     var selectedTab: AppTab = .org {
         didSet { notify() }
     }
-    private(set) var errorMessage: String?
-    private(set) var statusMessage: String?
-    private(set) var isRunning = false
-    private(set) var run: RunRecord?
-    private(set) var events: [TraceEvent] = []
-    private(set) var liveLog: [String] = []
-    private(set) var runPhase: String?
-    private(set) var runIteration: Int?
-    private(set) var pendingApproval: PendingApproval?
-    private(set) var lastInspection: HandoffInspection?
-    private(set) var validationIssues: [OrgValidationIssue] = []
-    private(set) var recentRuns: [RunRecord] = []
-    var goalDraft: String = ""
-    private(set) var exportPath: String?
     /// Set when Play is requested with an empty goal; Run console consumes and clears it.
     private(set) var focusRunGoal = false
+    /// One-shot: org workspace should center the current selection on the canvas.
+    private(set) var shouldCenterSelection = false
+    /// One-shot: org workspace should fit the canvas to node bounds.
+    private(set) var shouldFitCanvas = false
+    /// One-shot request consumed by the window coordinator after a project is created.
+    private var setupPresentationProjectRoot: URL?
+    /// One-shot request to present the coding-tool-only setup sheet.
+    private var codingToolSetupRequested = false
 
     var selectedNodeId: String?
     var selectedEdgeId: String?
 
-    let yamlStore = YAMLStore()
     private(set) var traceStore: TraceStore?
-    private var engine: RunEngine?
-    /// Incremented when a new run session starts so stale async work cannot clear UI state.
-    private var runSession = 0
+
+    // MARK: - ProjectSession facade
+
+    var project: GraphicalProject? { projectSession.project }
+    var layout: CanvasLayout { projectSession.layout }
+    var goalDraft: String {
+        get { projectSession.goalDraft }
+        set { projectSession.goalDraft = newValue }
+    }
+    var validationIssues: [OrgValidationIssue] { projectSession.validationIssues }
+    var yamlStore: YAMLStore { projectSession.yamlStore }
+    var hasUnsavedChanges: Bool { projectSession.hasUnsavedChanges }
+
+    var projectReadiness: ProjectReadiness? {
+        guard let project else { return nil }
+        let projectRoot = project.root.standardizedFileURL
+        let firstRunComplete = recentRuns.contains { run in
+            run.status == .succeeded
+                && URL(fileURLWithPath: run.projectRoot).standardizedFileURL.path == projectRoot.path
+        }
+        return projectSession.readiness(firstRunComplete: firstRunComplete)
+    }
+
+    // MARK: - RunSession facade
+
+    var isRunning: Bool { runSession.isRunning }
+    var run: RunRecord? { runSession.run }
+    var events: [TraceEvent] { runSession.events }
+    var liveLog: [String] { runSession.liveLog }
+    var runPhase: String? { runSession.runPhase }
+    var runIteration: Int? { runSession.runIteration }
+    var pendingApproval: PendingApproval? { runSession.pendingApproval }
+    var lastInspection: HandoffInspection? { runSession.lastInspection }
+
+    /// Human-readable run progress for the Run console.
+    func runProgressCopy() -> RunProgressCopy {
+        runSession.progressCopy(org: project?.org)
+    }
+    var recentRuns: [RunRecord] { runSession.recentRuns }
+    var exportPath: String? { runSession.exportPath }
 
     enum AppTab: String, CaseIterable, Identifiable {
-        case org = "Org"
+        case org = "Workflow"
         case run = "Run"
-        case trace = "Trace"
+        case trace = "History"
         case runners = "Agents"
 
         var id: String { rawValue }
@@ -74,6 +118,14 @@ final class AppModel {
         delegate?.appModelDidChange(self)
     }
 
+    func refreshDirtyIndicator() {
+        delegate?.appModelDirtyStateDidChange(self)
+    }
+
+    private func notifyProgress() {
+        delegate?.appModelRunProgressDidChange(self)
+    }
+
     func openProjectPanel() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -97,21 +149,16 @@ final class AppModel {
     }
 
     func openProject(at url: URL) {
+        setupPresentationProjectRoot = nil
         do {
-            if yamlStore.exists(at: url) {
-                project = try yamlStore.load(from: url)
-            } else {
-                project = try yamlStore.createProject(at: url, seedTemplate: true)
+            let created = try projectSession.open(at: url)
+            if created {
                 statusMessage = "Created .graphical project in \(url.path)"
             }
-            if let project {
-                layout = try yamlStore.loadLayout(projectRoot: project.root, org: project.org)
-            }
-            goalDraft = project?.config.goal ?? ""
             selectedNodeId = project?.org.entryNodeId
             selectedEdgeId = nil
-            revalidate()
-            refreshRecentRuns()
+            runSession.refreshRecentRuns(traceStore: traceStore)
+            setupPresentationProjectRoot = created ? project?.root.standardizedFileURL : nil
             selectedTab = .org
             errorMessage = nil
             notify()
@@ -122,17 +169,14 @@ final class AppModel {
     }
 
     func createProject(at url: URL) {
+        setupPresentationProjectRoot = nil
         do {
-            project = try yamlStore.createProject(at: url, seedTemplate: true)
-            if let project {
-                layout = try yamlStore.loadLayout(projectRoot: project.root, org: project.org)
-            }
-            goalDraft = project?.config.goal ?? ""
+            try projectSession.create(at: url)
             selectedNodeId = project?.org.entryNodeId
             selectedEdgeId = nil
-            revalidate()
             statusMessage = "Created Graphical project at \(url.path)"
             errorMessage = nil
+            setupPresentationProjectRoot = project?.root.standardizedFileURL
             selectedTab = .org
             notify()
         } catch {
@@ -142,95 +186,158 @@ final class AppModel {
     }
 
     func closeProject() {
+        if hasUnsavedChanges {
+            let alert = NSAlert()
+            alert.messageText = "Discard unsaved changes?"
+            alert.informativeText = "Your workflow, layout, coding tools, or goal have changes that are not saved."
+            alert.addButton(withTitle: "Discard")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+            if alert.runModal() == .alertSecondButtonReturn { return }
+        }
         if isRunning {
             cancelRun()
         }
-        runSession += 1
-        project = nil
-        layout = CanvasLayout()
+        runSession.bumpSessionForClose()
+        projectSession.clear()
         selectedNodeId = nil
         selectedEdgeId = nil
         selectedTab = .org
-        goalDraft = ""
-        run = nil
-        events = []
-        liveLog = []
-        pendingApproval = nil
-        lastInspection = nil
-        validationIssues = []
-        exportPath = nil
-        engine = nil
+        setupPresentationProjectRoot = nil
+        codingToolSetupRequested = false
         errorMessage = nil
         statusMessage = "Project closed"
         notify()
     }
 
-    func saveProject() {
-        guard let project else { return }
+    @discardableResult
+    func saveProject() -> Bool {
         do {
-            var updated = project
-            updated.config.goal = goalDraft
-            try yamlStore.save(updated)
-            try yamlStore.saveLayout(layout, projectRoot: updated.root)
-            self.project = updated
-            revalidate()
+            guard try projectSession.save() else { return false }
             statusMessage = "Saved .graphical YAML"
             errorMessage = nil
             notify()
+            return true
         } catch {
             errorMessage = error.localizedDescription
             notify()
+            return false
         }
     }
 
     func revalidate() {
-        guard let project else {
-            validationIssues = []
-            return
-        }
-        validationIssues = OrgValidator.validate(org: project.org, runners: project.runners)
+        projectSession.revalidate()
     }
 
     func updateOrg(_ org: OrgGraph) {
-        guard var project else { return }
-        project.org = org
-        self.project = project
-        layout.ensurePositions(for: org)
-        revalidate()
+        projectSession.updateOrg(org)
         notify()
     }
 
     func updateLayout(_ layout: CanvasLayout, persist: Bool = false) {
-        self.layout = layout
-        if persist, let project {
-            try? yamlStore.saveLayout(layout, projectRoot: project.root)
-        }
+        projectSession.updateLayout(layout, persist: persist)
         notify()
     }
 
     func setNodePosition(id: String, x: Double, y: Double, persist: Bool) {
-        layout.nodes[id] = NodePosition(x: x, y: y)
-        if persist, let project {
-            try? yamlStore.saveLayout(layout, projectRoot: project.root)
-        }
+        projectSession.setNodePosition(id: id, x: x, y: y, persist: persist)
     }
 
     func updateProjectName(_ name: String) {
-        guard var project else { return }
-        project.config.name = name
-        self.project = project
+        projectSession.updateProjectName(name)
         notify()
     }
 
     func updateRunners(_ runners: RunnersConfig) {
-        guard var project else { return }
-        project.runners = runners
-        self.project = project
-        revalidate()
+        projectSession.updateRunners(runners)
         notify()
     }
 
-    /// Switch to Run and start if a goal is present; otherwise focus the goal field.
+    @discardableResult
+    func applyAgentPreset(_ presetID: String) -> Bool {
+        do {
+            let displayName = try projectSession.applyAgentPreset(presetID)
+            errorMessage = nil
+            statusMessage = "Using \(displayName)"
+            notify()
+            return true
+        } catch CodingToolSetupError.unknownPreset(let id) {
+            errorMessage = "Unknown coding tool preset: \(id)"
+            notify()
+            return false
+        } catch {
+            errorMessage = "Could not apply coding tool preset: \(error)"
+            notify()
+            return false
+        }
+    }
+
+    @discardableResult
+    func completeSetup(goal: String, presetID: String) -> Bool {
+        goalDraft = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard applyAgentPreset(presetID), saveProject(), let project else {
+            return false
+        }
+
+        revalidate()
+        let readiness = ProjectReadiness.derive(
+            goal: goalDraft,
+            org: project.org,
+            runners: project.runners,
+            firstRunComplete: false
+        )
+        guard readiness.canRun else {
+            errorMessage = "The project is not ready to run"
+            notify()
+            return false
+        }
+        selectedTab = .org
+        selectedNodeId = project.org.entryNodeId
+        selectedEdgeId = nil
+        shouldFitCanvas = true
+        shouldCenterSelection = true
+        statusMessage =
+            "Workflow ready — run Planner → Implementer → Reviewer when you’re ready"
+        errorMessage = nil
+        notify()
+        return true
+    }
+
+    func openHistoryForCurrentRun() {
+        guard let run else {
+            selectedTab = .trace
+            notify()
+            return
+        }
+        loadRun(run)
+    }
+
+    func consumeSetupPresentationRequest() -> URL? {
+        defer { setupPresentationProjectRoot = nil }
+        return setupPresentationProjectRoot
+    }
+
+    func requestCodingToolSetup() {
+        guard project != nil else { return }
+        codingToolSetupRequested = true
+        notify()
+    }
+
+    func consumeCodingToolSetupRequest() -> Bool {
+        defer { codingToolSetupRequested = false }
+        return codingToolSetupRequested
+    }
+
+    @discardableResult
+    func applyCodingToolPreset(_ presetID: String) -> Bool {
+        guard applyAgentPreset(presetID) else { return false }
+        return saveProject()
+    }
+
+    func inferredCodingToolPresetID() -> String? {
+        projectSession.inferredCodingToolPresetID()
+    }
+
     func play() {
         selectedTab = .run
         let trimmed = goalDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -248,21 +355,30 @@ final class AppModel {
         focusRunGoal = false
     }
 
+    func showRunGoalEditor() {
+        focusRunGoal = true
+        if selectedTab == .run {
+            notify()
+        } else {
+            selectedTab = .run
+        }
+    }
+
     func startRun() {
         guard let project, let traceStore else { return }
-        if isRunning {
+        if runSession.hasActiveRunTask {
             statusMessage = "Run already in progress"
             notify()
             return
         }
         if pendingApproval != nil {
             selectedTab = .run
-            statusMessage = "Approve or reject the pending handoff first"
+            statusMessage = "Approve or reject what will be passed to the next step"
             notify()
             return
         }
         if !validationIssues.isEmpty {
-            errorMessage = "Fix org validation issues before running"
+            errorMessage = "Fix workflow validation issues before running"
             notify()
             return
         }
@@ -275,164 +391,142 @@ final class AppModel {
             notify()
             return
         }
-        runSession += 1
-        let session = runSession
-        isRunning = true
         errorMessage = nil
         statusMessage = "Run starting…"
-        runPhase = "starting"
-        runIteration = nil
         notify()
-        let engine = RunEngine(store: traceStore)
-        self.engine = engine
-        Task {
-            await attachRunProgressHandler(to: engine, session: session)
-            do {
-                let run = try await engine.start(project: project, goal: goalDraft)
-                guard isCurrentRunSession(session), self.engine === engine else { return }
-                await refreshFromEngine(engine, run: run)
-                if run.status == .awaitingApproval {
-                    statusMessage = "Awaiting approval"
-                } else if run.status == .succeeded {
-                    statusMessage = "Run succeeded"
-                } else if run.status == .failed {
-                    statusMessage = "Run failed"
+        runSession.start(
+            project: project,
+            goal: goalDraft,
+            traceStore: traceStore,
+            onProgress: { [weak self] snapshot in
+                guard let self else { return }
+                if let message = self.runSession.applyProgressSnapshot(
+                    snapshot,
+                    whileRunning: true,
+                    org: self.project?.org
+                ) {
+                    self.statusMessage = message
                 }
-            } catch {
-                guard isCurrentRunSession(session), self.engine === engine else { return }
-                errorMessage = error.localizedDescription
-                await refreshFromEngine(engine, run: await engine.currentRun)
+                self.notifyProgress()
+            },
+            onFinished: { [weak self] status, error in
+                guard let self else { return }
+                if let status { self.statusMessage = status }
+                if let error, self.errorMessage == nil { self.errorMessage = error }
+                self.notify()
             }
-            guard isCurrentRunSession(session), self.engine === engine else { return }
-            await engine.setProgressHandler(nil)
-            isRunning = false
-            runPhase = nil
-            runIteration = nil
-            refreshRecentRuns()
-            notify()
-        }
+        )
     }
 
     func approve() {
-        guard let engine else { return }
-        let session = runSession
-        isRunning = true
-        notify()
-        Task {
-            await attachRunProgressHandler(to: engine, session: session)
-            do {
-                let run = try await engine.approve()
-                guard isCurrentRunSession(session), self.engine === engine else { return }
-                await refreshFromEngine(engine, run: run)
-                statusMessage = run.status == .succeeded ? "Run succeeded" : "Approved; continuing"
-            } catch {
-                guard isCurrentRunSession(session), self.engine === engine else { return }
-                errorMessage = error.localizedDescription
-            }
-            guard isCurrentRunSession(session), self.engine === engine else { return }
-            await engine.setProgressHandler(nil)
-            isRunning = false
-            runPhase = nil
-            runIteration = nil
-            refreshRecentRuns()
+        if runSession.hasActiveRunTask {
+            statusMessage = "Run already in progress"
             notify()
+            return
         }
+        notify()
+        runSession.approve(
+            projectOrg: project?.org,
+            traceStore: traceStore,
+            onProgress: { [weak self] snapshot in
+                guard let self else { return }
+                if let message = self.runSession.applyProgressSnapshot(
+                    snapshot,
+                    whileRunning: true,
+                    org: self.project?.org
+                ) {
+                    self.statusMessage = message
+                }
+                self.notifyProgress()
+            },
+            onFinished: { [weak self] status, error in
+                guard let self else { return }
+                if let status { self.statusMessage = status }
+                if let error, self.errorMessage == nil { self.errorMessage = error }
+                self.notify()
+            }
+        )
     }
 
     func rejectApproval() {
-        guard let engine else { return }
         Task {
-            do {
-                let run = try await engine.rejectApproval(notes: "Rejected by user")
-                await refreshFromEngine(engine, run: run)
-                statusMessage = "Approval rejected"
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            refreshRecentRuns()
+            let result = await runSession.rejectApproval(traceStore: traceStore)
+            if let status = result.status { statusMessage = status }
+            if let error = result.error { errorMessage = error }
             notify()
         }
     }
 
     func cancelRun() {
-        guard let engine else { return }
-        let session = runSession
-        Task {
-            try? await engine.cancel()
-            guard isCurrentRunSession(session), self.engine === engine else { return }
-            await refreshFromEngine(engine, run: await engine.currentRun)
-            isRunning = false
-            runPhase = nil
-            runIteration = nil
-            statusMessage = "Cancelled"
-            refreshRecentRuns()
-            notify()
-        }
+        runSession.cancel(traceStore: traceStore)
+        statusMessage = "Cancelling…"
+        notify()
     }
 
     func retryRun() {
-        guard let engine else { return }
-        let session = runSession
-        isRunning = true
-        notify()
-        Task {
-            await attachRunProgressHandler(to: engine, session: session)
-            do {
-                try await engine.retryActiveNode()
-                guard isCurrentRunSession(session), self.engine === engine else { return }
-                await refreshFromEngine(engine, run: await engine.currentRun)
-            } catch {
-                guard isCurrentRunSession(session), self.engine === engine else { return }
-                errorMessage = error.localizedDescription
-            }
-            guard isCurrentRunSession(session), self.engine === engine else { return }
-            await engine.setProgressHandler(nil)
-            isRunning = false
-            runPhase = nil
-            runIteration = nil
-            refreshRecentRuns()
+        if runSession.hasActiveRunTask {
+            statusMessage = "Run already in progress"
             notify()
+            return
         }
+        if !(run?.status == .failed || run?.status == .cancelled) {
+            statusMessage = "Can only retry a failed or cancelled run"
+            notify()
+            return
+        }
+        notify()
+        runSession.retry(
+            projectOrg: project?.org,
+            traceStore: traceStore,
+            onProgress: { [weak self] snapshot in
+                guard let self else { return }
+                if let message = self.runSession.applyProgressSnapshot(
+                    snapshot,
+                    whileRunning: true,
+                    org: self.project?.org
+                ) {
+                    self.statusMessage = message
+                }
+                self.notifyProgress()
+            },
+            onFinished: { [weak self] status, error in
+                guard let self else { return }
+                if let status { self.statusMessage = status }
+                if let error, self.errorMessage == nil || status == "Can only retry a failed or cancelled run" {
+                    self.errorMessage = error
+                }
+                self.notify()
+            }
+        )
     }
 
     func loadRun(_ run: RunRecord) {
-        self.run = run
         selectedTab = .trace
         notify()
-        Task {
-            do {
-                events = try await traceStore?.events(runId: run.id) ?? []
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            notify()
+        runSession.loadRun(run, traceStore: traceStore) { [weak self] error in
+            guard let self else { return }
+            if let error { self.errorMessage = error }
+            self.notify()
         }
     }
 
     func exportTrace() {
-        guard let run, let traceStore else { return }
         Task {
-            do {
-                let data = try await traceStore.exportTraceJSON(runId: run.id)
-                let panel = NSSavePanel()
-                panel.nameFieldStringValue = "trace-\(run.id).json"
-                panel.allowedContentTypes = [.json]
-                if panel.runModal() == .OK, let url = panel.url {
-                    try data.write(to: url)
-                    exportPath = url.path
-                    statusMessage = "Exported trace to \(url.path)"
-                }
-            } catch {
-                errorMessage = error.localizedDescription
+            let result = await runSession.exportTrace(traceStore: traceStore)
+            if let path = result.path {
+                statusMessage =
+                    "Exported trace to \(path) — may still contain summaries/paths; treat as sensitive"
+            }
+            if let error = result.error {
+                errorMessage = error
             }
             notify()
         }
     }
 
     func ensureArtifactsGitignore() {
-        guard let project else { return }
         do {
-            try yamlStore.ensureArtifactsGitignore(projectRoot: project.root)
+            try projectSession.ensureArtifactsGitignore()
             statusMessage = "Ensured artifacts .gitignore"
         } catch {
             errorMessage = error.localizedDescription
@@ -443,161 +537,92 @@ final class AppModel {
     // MARK: - Org mutations
 
     func addNode() {
-        mutateOrg { org in
-            let id = "node_\(org.nodes.count + 1)"
-            org.nodes.append(
-                OrgNode(
-                    id: id,
-                    role: "Role",
-                    runner: project?.runners.runners.keys.sorted().first ?? "echo_fixture",
-                    instructions: "Describe this role.",
-                    done: .allOf([.artifact("output.md")]),
-                    maxIterations: 3
-                )
-            )
-            let offset = Double(org.nodes.count) * 24
-            layout.nodes[id] = NodePosition(x: 120 + offset, y: 120 + offset)
+        if let id = projectSession.addNode() {
             selectedNodeId = id
             selectedEdgeId = nil
         }
+        notify()
     }
 
     func replaceNode(_ node: OrgNode) {
-        mutateOrg { org in
-            if let idx = org.nodes.firstIndex(where: { $0.id == node.id }) {
-                org.nodes[idx] = node
-            }
-        }
+        projectSession.replaceNode(node)
+        notify()
     }
 
     func deleteNode(id: String) {
-        mutateOrg { org in
-            org.nodes.removeAll { $0.id == id }
-            org.edges.removeAll { $0.from == id || $0.to == id || $0.targets.contains(id) }
-            if org.entry == id { org.entry = org.nodes.first?.id }
-            layout.nodes.removeValue(forKey: id)
-            if selectedNodeId == id { selectedNodeId = org.entryNodeId }
+        let nextSelection = projectSession.deleteNode(id: id)
+        if selectedNodeId == id {
+            selectedNodeId = nextSelection
         }
+        notify()
     }
 
     func setEntry(_ id: String) {
-        mutateOrg { org in
-            org.entry = id
-        }
+        projectSession.setEntry(id)
+        notify()
     }
 
     func addFixedEdge(from: String? = nil, to: String? = nil) {
-        mutateOrg { org in
-            guard let from = from ?? org.nodes.first?.id else { return }
-            let to = to ?? org.nodes.dropFirst().first?.id ?? from
-            let edge = OrgEdge(from: from, to: to, type: .fixed, on: .success)
-            org.edges.append(edge)
-            selectedEdgeId = edge.id
+        if let edgeId = projectSession.addFixedEdge(from: from, to: to) {
+            selectedEdgeId = edgeId
             selectedNodeId = nil
         }
+        notify()
     }
 
-    func addRouterEdge(from: String? = nil) {
-        mutateOrg { org in
-            guard let from = from ?? org.nodes.first?.id else { return }
-            let targets = Array(org.nodes.filter { $0.id != from }.prefix(2).map(\.id))
-            let edge = OrgEdge(
-                from: from,
-                type: .router,
-                targets: targets.isEmpty ? [from] : targets,
-                requiresApproval: true
-            )
-            org.edges.append(edge)
-            selectedEdgeId = edge.id
+    func addRouterEdge(from: String? = nil, to: String? = nil) {
+        if let edgeId = projectSession.addRouterEdge(from: from, to: to) {
+            selectedEdgeId = edgeId
             selectedNodeId = nil
         }
+        notify()
     }
 
     func replaceEdge(_ edge: OrgEdge) {
-        mutateOrg { org in
-            if let idx = org.edges.firstIndex(where: { $0.id == edge.id }) {
-                org.edges[idx] = edge
-            }
-        }
+        projectSession.replaceEdge(edge)
+        notify()
     }
 
     func deleteEdge(id: String) {
-        mutateOrg { org in
-            org.edges.removeAll { $0.id == id }
-            if selectedEdgeId == id { selectedEdgeId = nil }
-        }
-    }
-
-    private func mutateOrg(_ body: (inout OrgGraph) -> Void) {
-        guard var project else { return }
-        body(&project.org)
-        self.project = project
-        layout.ensurePositions(for: project.org)
-        revalidate()
+        projectSession.deleteEdge(id: id)
+        if selectedEdgeId == id { selectedEdgeId = nil }
         notify()
     }
 
-    private func isCurrentRunSession(_ session: Int) -> Bool {
-        session == runSession
-    }
-
-    private func attachRunProgressHandler(to engine: RunEngine, session: Int) async {
-        await engine.setProgressHandler { @MainActor [weak self] snapshot in
-            guard let self, self.isCurrentRunSession(session), self.engine === engine else { return }
-            self.applyProgressSnapshot(snapshot, whileRunning: true)
+    func deleteSelection() {
+        if let id = selectedNodeId {
+            deleteNode(id: id)
+        } else if let id = selectedEdgeId {
+            deleteEdge(id: id)
         }
     }
 
-    private func refreshFromEngine(_ engine: RunEngine, run: RunRecord?) async {
-        self.run = run
-        self.liveLog = await engine.liveLog
-        self.pendingApproval = await engine.pendingApproval
-        self.lastInspection = await engine.lastInspection
-        self.runPhase = await engine.currentPhase
-        self.runIteration = await engine.currentIteration
-        if let run {
-            self.events = (try? await traceStore?.events(runId: run.id)) ?? []
+    func focusValidationIssue(_ issue: OrgValidationIssue) {
+        selectedTab = .org
+        if let edgeId = issue.focusEdgeId {
+            selectedEdgeId = edgeId
+            selectedNodeId = nil
+        } else if let nodeId = issue.focusNodeId {
+            selectedNodeId = nodeId
+            selectedEdgeId = nil
         }
-    }
-
-    private func applyProgressSnapshot(_ snapshot: RunProgressSnapshot, whileRunning: Bool) {
-        if let snapshotRun = snapshot.run {
-            run = snapshotRun
-        }
-        liveLog = snapshot.liveLog
-        pendingApproval = snapshot.pendingApproval
-        lastInspection = snapshot.lastInspection
-        runPhase = snapshot.phase
-        runIteration = snapshot.iteration
-        if whileRunning {
-            statusMessage = runningStatusMessage(from: snapshot)
-        }
+        shouldCenterSelection = true
         notify()
     }
 
-    private func runningStatusMessage(from snapshot: RunProgressSnapshot) -> String {
-        if snapshot.run?.status == .awaitingApproval {
-            return "Awaiting approval"
-        }
-        guard let nodeId = snapshot.run?.activeNodeId else {
-            return snapshot.phase.map { "Running · \($0)" } ?? "Running…"
-        }
-        let role = project?.org.node(id: nodeId)?.role ?? nodeId
-        var parts = ["Running \(role)"]
-        if let phase = snapshot.phase {
-            parts.append(phase)
-        }
-        if let iteration = snapshot.iteration,
-           let max = project?.org.node(id: nodeId)?.maxIterations {
-            parts.append("iteration \(iteration)/\(max)")
-        }
-        return parts.joined(separator: " · ")
+    func consumeCenterSelectionRequest() {
+        shouldCenterSelection = false
     }
 
-    private func refreshRecentRuns() {
-        Task {
-            recentRuns = (try? await traceStore?.recentRuns()) ?? []
-            notify()
-        }
+    func requestFitCanvas() {
+        selectedTab = .org
+        shouldFitCanvas = true
+        notify()
+    }
+
+    func consumeFitCanvasRequest() -> Bool {
+        let request = shouldFitCanvas
+        shouldFitCanvas = false
+        return request
     }
 }

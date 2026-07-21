@@ -1,8 +1,9 @@
 import AppKit
+import GraphicalCLI
 import GraphicalDomain
 
 @MainActor
-final class MainWindowController: NSWindowController, AppModelDelegate {
+final class MainWindowController: NSWindowController, AppModelDelegate, NSWindowDelegate {
     private let model = AppModel()
     private let rail = NavRailView()
     private let topBar = TopBarView()
@@ -16,29 +17,163 @@ final class MainWindowController: NSWindowController, AppModelDelegate {
     private let traceWorkspace = TraceController()
     private let runnersWorkspace = RunnersController()
 
-    /// Retained root stacks — locals would be fine as subviews, but keep explicit for layout debugging.
-    private let rootRow = NSStackView()
-    private let mainColumn = NSStackView()
+    /// Plain container views — avoid NSStackView here. Horizontal stacks were
+    /// sizing the main column to its fitting width and parking the workflow
+    /// chrome in a trailing strip with a large void beside the rail.
+    private let rootRow = NSView()
+    private let mainColumn = NSView()
 
     private var validationHeight: NSLayoutConstraint?
     private var shownKey: String?
+    private var cancelMenuItem: NSMenuItem?
+    private var tabMenuItems: [NSMenuItem] = []
+    private var setupAssistant: SetupAssistantController?
+    private var setupPresentationScheduled = false
+    private var codingToolSetupPresentationScheduled = false
+    private var screenObserver: NSObjectProtocol?
 
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
+            contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Graphical"
-        window.minSize = NSSize(width: 960, height: 640)
-        window.center()
         window.backgroundColor = Theme.background
         window.titlebarAppearsTransparent = false
+        // Soft floor; `fitWindowToVisibleScreen` clamps both min and initial
+        // frame to the actual visible screen so small laptops / split views
+        // never get a window larger than the display.
+        window.minSize = NSSize(width: 560, height: 400)
         self.init(window: window)
+        window.delegate = self
+        Self.fitWindowToVisibleScreen(window, resetToDefaultSize: true)
         model.delegate = self
         buildUI()
         reload()
+        // Auto Layout can grow the window to content's fitting size after the
+        // chrome is installed — clamp again so we stay on-screen.
+        Self.fitWindowToVisibleScreen(window, resetToDefaultSize: true)
+        observeScreenChanges()
+        DispatchQueue.main.async { [weak self] in
+            guard let window = self?.window else { return }
+            Self.fitWindowToVisibleScreen(window, resetToDefaultSize: false)
+        }
+    }
+
+    deinit {
+        if let screenObserver {
+            NotificationCenter.default.removeObserver(screenObserver)
+        }
+    }
+
+    private func observeScreenChanges() {
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let window = self?.window else { return }
+                Self.fitWindowToVisibleScreen(window, resetToDefaultSize: false)
+            }
+        }
+    }
+
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        let maxOuter = Self.maxOuterSize(for: sender)
+        return NSSize(
+            width: min(frameSize.width, maxOuter.width),
+            height: min(frameSize.height, maxOuter.height)
+        )
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard let window else { return }
+        Self.fitWindowToVisibleScreen(window, resetToDefaultSize: false)
+    }
+
+    private static func maxOuterSize(for window: NSWindow) -> NSSize {
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let margin: CGFloat = 16
+        return NSSize(
+            width: max(320, visible.width - margin * 2),
+            height: max(240, visible.height - margin * 2)
+        )
+    }
+
+    /// Keeps the window inside the screen's visible frame (menu bar / dock /
+    /// Stage Manager). Sets hard max sizes so Auto Layout cannot grow past the
+    /// display. When `resetToDefaultSize` is false, only shrinks if oversized
+    /// and refreshes min/max — preserves a user-chosen smaller size.
+    private static func fitWindowToVisibleScreen(_ window: NSWindow, resetToDefaultSize: Bool) {
+        guard let screen = window.screen ?? NSScreen.main else {
+            window.center()
+            return
+        }
+
+        let visible = screen.visibleFrame
+        let margin: CGFloat = 16
+        let maxOuter = maxOuterSize(for: window)
+
+        // Hard cap: content fitting size must not push the window off-screen.
+        window.maxSize = maxOuter
+        window.contentMaxSize = NSSize(
+            width: max(280, maxOuter.width - 20),
+            height: max(180, maxOuter.height - 40)
+        )
+
+        var size: NSSize
+        if resetToDefaultSize {
+            // Comfortable default — not nearly full-bleed.
+            size = NSSize(
+                width: min(1024, maxOuter.width * 0.82),
+                height: min(700, maxOuter.height * 0.85)
+            )
+        } else {
+            size = window.frame.size
+        }
+        size.width = max(320, min(size.width, maxOuter.width))
+        size.height = max(240, min(size.height, maxOuter.height))
+
+        // Min size must be ≤ both the launch size and the visible area, or Auto
+        // Layout will fight the window chrome and content will overflow.
+        let minWidth = min(560, maxOuter.width, size.width)
+        let minHeight = min(400, maxOuter.height, size.height)
+        window.minSize = NSSize(width: minWidth, height: minHeight)
+        window.contentMinSize = NSSize(
+            width: max(280, minWidth - 20),
+            height: max(180, minHeight - 40)
+        )
+
+        var origin = window.frame.origin
+        if resetToDefaultSize {
+            origin = NSPoint(
+                x: visible.midX - size.width / 2,
+                y: visible.midY - size.height / 2
+            )
+        }
+        origin.x = max(visible.minX + margin, min(origin.x, visible.maxX - size.width - margin))
+        origin.y = max(visible.minY + margin, min(origin.y, visible.maxY - size.height - margin))
+
+        var frame = NSRect(origin: origin, size: size)
+        frame = window.constrainFrameRect(frame, to: screen)
+        if frame.maxX > visible.maxX { frame.origin.x = visible.maxX - frame.width }
+        if frame.maxY > visible.maxY { frame.origin.y = visible.maxY - frame.height }
+        if frame.minX < visible.minX { frame.origin.x = visible.minX }
+        if frame.minY < visible.minY { frame.origin.y = visible.minY }
+        frame.size.width = min(frame.width, maxOuter.width)
+        frame.size.height = min(frame.height, maxOuter.height)
+
+        if resetToDefaultSize
+            || abs(frame.width - window.frame.width) > 0.5
+            || abs(frame.height - window.frame.height) > 0.5
+            || abs(frame.minX - window.frame.minX) > 0.5
+            || abs(frame.minY - window.frame.minY) > 0.5 {
+            window.setFrame(frame, display: true)
+        }
     }
 
     private func buildUI() {
@@ -67,41 +202,65 @@ final class MainWindowController: NSWindowController, AppModelDelegate {
         validationHeight?.isActive = true
         validationBanner.isHidden = true
         validationBanner.clipsToBounds = true
+        validationBanner.delegate = self
 
-        // Vertical main column: top bar → validation → workspace → status
-        mainColumn.orientation = .vertical
-        mainColumn.alignment = .width
-        mainColumn.spacing = 0
-        mainColumn.distribution = .fill
-        mainColumn.translatesAutoresizingMaskIntoConstraints = false
-        mainColumn.setHuggingPriority(.defaultLow, for: .horizontal)
-        mainColumn.addArrangedSubview(topBar)
-        mainColumn.addArrangedSubview(validationBanner)
-        mainColumn.addArrangedSubview(contentHost)
-        mainColumn.addArrangedSubview(statusBar)
+        for view in [rootRow, mainColumn, topBar, validationBanner, contentHost, statusBar, rail] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+        }
+        mainColumn.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        mainColumn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        contentHost.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        contentHost.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        rail.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        // Prefer compressing chrome over growing the window past the screen.
+        rail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // Horizontal root: rail | main — stack layout cannot collapse the rail width.
-        rootRow.orientation = .horizontal
-        rootRow.alignment = .top
-        rootRow.spacing = 0
-        rootRow.distribution = .fill
-        rootRow.translatesAutoresizingMaskIntoConstraints = false
-        rootRow.setHuggingPriority(.required, for: .horizontal)
-        rail.setContentHuggingPriority(.required, for: .horizontal)
-        rail.setContentCompressionResistancePriority(.required, for: .horizontal)
-        rootRow.addArrangedSubview(rail)
-        rootRow.addArrangedSubview(mainColumn)
-
+        rootRow.addSubview(rail)
+        rootRow.addSubview(mainColumn)
+        mainColumn.addSubview(topBar)
+        mainColumn.addSubview(validationBanner)
+        mainColumn.addSubview(contentHost)
+        mainColumn.addSubview(statusBar)
         content.addSubview(rootRow)
+
+        let railWidth = rail.widthAnchor.constraint(equalToConstant: Theme.railWidth)
+        railWidth.priority = .defaultHigh
+        content.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        content.setContentHuggingPriority(.defaultLow, for: .horizontal)
         NSLayoutConstraint.activate([
             rootRow.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             rootRow.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             rootRow.topAnchor.constraint(equalTo: content.topAnchor),
             rootRow.bottomAnchor.constraint(equalTo: content.bottomAnchor),
 
-            rail.widthAnchor.constraint(equalToConstant: Theme.railWidth),
-            rail.heightAnchor.constraint(equalTo: rootRow.heightAnchor),
-            mainColumn.heightAnchor.constraint(equalTo: rootRow.heightAnchor)
+            rail.leadingAnchor.constraint(equalTo: rootRow.leadingAnchor),
+            rail.topAnchor.constraint(equalTo: rootRow.topAnchor),
+            rail.bottomAnchor.constraint(equalTo: rootRow.bottomAnchor),
+            railWidth,
+            rail.widthAnchor.constraint(lessThanOrEqualTo: rootRow.widthAnchor, multiplier: 0.32),
+            rail.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
+
+            mainColumn.leadingAnchor.constraint(equalTo: rail.trailingAnchor),
+            mainColumn.trailingAnchor.constraint(equalTo: rootRow.trailingAnchor),
+            mainColumn.topAnchor.constraint(equalTo: rootRow.topAnchor),
+            mainColumn.bottomAnchor.constraint(equalTo: rootRow.bottomAnchor),
+
+            topBar.leadingAnchor.constraint(equalTo: mainColumn.leadingAnchor),
+            topBar.trailingAnchor.constraint(equalTo: mainColumn.trailingAnchor),
+            topBar.topAnchor.constraint(equalTo: mainColumn.topAnchor),
+
+            validationBanner.leadingAnchor.constraint(equalTo: mainColumn.leadingAnchor),
+            validationBanner.trailingAnchor.constraint(equalTo: mainColumn.trailingAnchor),
+            validationBanner.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+
+            contentHost.leadingAnchor.constraint(equalTo: mainColumn.leadingAnchor),
+            contentHost.trailingAnchor.constraint(equalTo: mainColumn.trailingAnchor),
+            contentHost.topAnchor.constraint(equalTo: validationBanner.bottomAnchor),
+            contentHost.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+
+            statusBar.leadingAnchor.constraint(equalTo: mainColumn.leadingAnchor),
+            statusBar.trailingAnchor.constraint(equalTo: mainColumn.trailingAnchor),
+            statusBar.bottomAnchor.constraint(equalTo: mainColumn.bottomAnchor)
         ])
 
         installMenus()
@@ -132,8 +291,23 @@ final class MainWindowController: NSWindowController, AppModelDelegate {
         let runItem = NSMenuItem()
         main.addItem(runItem)
         let runMenu = NSMenu(title: "Run")
-        runMenu.addItem(withTitle: "Play Graph", action: #selector(menuPlay), keyEquivalent: "r")
+        runMenu.addItem(withTitle: "Run Workflow", action: #selector(menuPlay), keyEquivalent: "r")
+        cancelMenuItem = runMenu.addItem(withTitle: "Cancel", action: #selector(menuCancel), keyEquivalent: ".")
         runItem.submenu = runMenu
+
+        let viewItem = NSMenuItem()
+        main.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        for (index, tab) in AppModel.AppTab.allCases.enumerated() {
+            let item = viewMenu.addItem(
+                withTitle: tab.rawValue,
+                action: #selector(menuSelectTab(_:)),
+                keyEquivalent: "\(index + 1)"
+            )
+            item.tag = index
+            tabMenuItems.append(item)
+        }
+        viewItem.submenu = viewMenu
 
         // Edit menu is required for Cmd+C/V/X/A to reach NSTextField / NSTextView.
         let editItem = NSMenuItem()
@@ -157,9 +331,49 @@ final class MainWindowController: NSWindowController, AppModelDelegate {
     @objc private func menuClose() { model.closeProject() }
     @objc private func menuSave() { model.saveProject() }
     @objc private func menuPlay() { model.play() }
+    @objc private func menuCancel() { model.cancelRun() }
+    @objc private func menuSelectTab(_ sender: NSMenuItem) {
+        guard model.project != nil else { return }
+        let tabs = AppModel.AppTab.allCases
+        guard sender.tag >= 0, sender.tag < tabs.count else { return }
+        model.selectedTab = tabs[sender.tag]
+    }
+
+    private func updateMenuState() {
+        let hasProject = model.project != nil
+        for item in tabMenuItems {
+            item.isEnabled = hasProject
+        }
+        cancelMenuItem?.isEnabled = hasProject && model.isRunning
+    }
 
     func appModelDidChange(_ model: AppModel) {
         reload()
+    }
+
+    func appModelDirtyStateDidChange(_ model: AppModel) {
+        topBar.reload(from: model)
+    }
+
+    /// Scoped path for run-progress ticks (plans/013): update only run-status-adjacent
+    /// chrome and, if the Run tab is showing, the run console's own scoped reload —
+    /// never rebuild org/trace/runners or tear down the nav rail's recent-runs list.
+    func appModelRunProgressDidChange(_ model: AppModel) {
+        topBar.reload(from: model)
+        rail.updateRunningIndicator(isRunning: model.isRunning)
+        statusBar.update(
+            error: model.errorMessage,
+            status: model.statusMessage,
+            isRunning: model.isRunning,
+            hasProject: model.project != nil
+        )
+        if model.project != nil, model.selectedTab == .run {
+            runWorkspace.reloadProgress()
+        }
+        if model.project != nil, model.selectedTab == .trace {
+            traceWorkspace.reloadProgress()
+        }
+        updateMenuState()
     }
 
     private func reload() {
@@ -172,7 +386,81 @@ final class MainWindowController: NSWindowController, AppModelDelegate {
             hasProject: model.project != nil
         )
         updateValidation()
+        updateMenuState()
         showCurrentContent()
+        scheduleSetupPresentationIfNeeded()
+        scheduleCodingToolSetupPresentationIfNeeded()
+    }
+
+    private func scheduleSetupPresentationIfNeeded() {
+        guard setupAssistant == nil,
+              !setupPresentationScheduled,
+              let requestedRoot = model.consumeSetupPresentationRequest() else {
+            return
+        }
+        setupPresentationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.setupPresentationScheduled = false
+            guard self.setupAssistant == nil,
+                  self.model.project?.root.standardizedFileURL == requestedRoot,
+                  let parentWindow = self.window,
+                  parentWindow.attachedSheet == nil else {
+                return
+            }
+
+            let controller = SetupAssistantController(
+                session: SetupSession(
+                    mode: .firstRun,
+                    goal: self.model.goalDraft,
+                    selectedPresetID: self.model.inferredCodingToolPresetID() ?? "demo"
+                )
+            )
+            controller.delegate = self
+            self.setupAssistant = controller
+            guard let sheet = controller.window else {
+                self.setupAssistant = nil
+                return
+            }
+            parentWindow.beginSheet(sheet)
+            controller.focusInitialControl()
+        }
+    }
+
+    private func scheduleCodingToolSetupPresentationIfNeeded() {
+        guard setupAssistant == nil,
+              !codingToolSetupPresentationScheduled,
+              model.consumeCodingToolSetupRequest(),
+              model.project != nil else {
+            return
+        }
+        codingToolSetupPresentationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.codingToolSetupPresentationScheduled = false
+            guard self.setupAssistant == nil,
+                  self.model.project != nil,
+                  let parentWindow = self.window,
+                  parentWindow.attachedSheet == nil else {
+                return
+            }
+
+            let controller = SetupAssistantController(
+                session: SetupSession(
+                    mode: .codingToolOnly,
+                    goal: self.model.goalDraft,
+                    selectedPresetID: self.model.inferredCodingToolPresetID() ?? "demo"
+                )
+            )
+            controller.delegate = self
+            self.setupAssistant = controller
+            guard let sheet = controller.window else {
+                self.setupAssistant = nil
+                return
+            }
+            parentWindow.beginSheet(sheet)
+            controller.focusInitialControl()
+        }
     }
 
     private func updateValidation() {
@@ -223,6 +511,12 @@ final class MainWindowController: NSWindowController, AppModelDelegate {
     }
 }
 
+extension MainWindowController: ValidationBannerViewDelegate {
+    func validationBanner(_ banner: ValidationBannerView, didSelect issue: OrgValidationIssue) {
+        model.focusValidationIssue(issue)
+    }
+}
+
 extension MainWindowController: NavRailViewDelegate {
     func navRail(_ rail: NavRailView, didSelect tab: AppModel.AppTab) {
         model.selectedTab = tab
@@ -262,8 +556,34 @@ extension MainWindowController: EmptyStateViewDelegate {
     func emptyStateDidCreate(_ view: EmptyStateView) { model.createProjectPanel() }
 }
 
+extension MainWindowController: SetupAssistantControllerDelegate {
+    func setupAssistant(
+        _ controller: SetupAssistantController,
+        finishWithGoal goal: String,
+        presetID: String
+    ) -> Bool {
+        model.completeSetup(goal: goal, presetID: presetID)
+    }
+
+    func setupAssistant(
+        _ controller: SetupAssistantController,
+        finishWithPresetID presetID: String
+    ) -> Bool {
+        model.applyCodingToolPreset(presetID)
+    }
+
+    func setupAssistantDidDismiss(_ controller: SetupAssistantController) {
+        if setupAssistant === controller {
+            setupAssistant = nil
+        }
+    }
+}
+
 final class ValidationBannerView: NSView {
-    private let label = NSTextField(wrappingLabelWithString: "")
+    weak var delegate: ValidationBannerViewDelegate?
+
+    private let stack = NSStackView()
+    private var issues: [OrgValidationIssue] = []
     var preferredHeight: CGFloat = 0
 
     override init(frame frameRect: NSRect) {
@@ -271,15 +591,16 @@ final class ValidationBannerView: NSView {
         wantsLayer = true
         layer?.backgroundColor = Theme.warningSoft.cgColor
         translatesAutoresizingMaskIntoConstraints = false
-        Theme.applyLabel(label, style: .caption)
-        label.textColor = Theme.warning
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            label.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
         ])
     }
 
@@ -287,9 +608,32 @@ final class ValidationBannerView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     func setIssues(_ issues: [OrgValidationIssue]) {
-        let text = issues.map { "• \($0.message)" }.joined(separator: "\n")
-        label.stringValue = text
-        let size = label.sizeThatFits(NSSize(width: 800, height: 10_000))
-        preferredHeight = max(36, size.height + 16)
+        self.issues = issues
+        stack.arrangedSubviews.forEach {
+            stack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        for (index, issue) in issues.enumerated() {
+            let button = NSButton(title: "• \(issue.message)", target: self, action: #selector(issueTapped(_:)))
+            button.bezelStyle = .inline
+            button.isBordered = false
+            button.font = Theme.bodyFont(ofSize: 11)
+            button.contentTintColor = Theme.warning
+            button.alignment = .left
+            button.tag = index
+            button.translatesAutoresizingMaskIntoConstraints = false
+            stack.addArrangedSubview(button)
+        }
+        preferredHeight = max(36, CGFloat(issues.count) * 22 + 16)
     }
+
+    @objc private func issueTapped(_ sender: NSButton) {
+        guard sender.tag >= 0, sender.tag < issues.count else { return }
+        delegate?.validationBanner(self, didSelect: issues[sender.tag])
+    }
+}
+
+@MainActor
+protocol ValidationBannerViewDelegate: AnyObject {
+    func validationBanner(_ banner: ValidationBannerView, didSelect issue: OrgValidationIssue)
 }

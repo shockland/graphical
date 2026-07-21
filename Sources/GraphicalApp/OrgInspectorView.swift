@@ -35,7 +35,8 @@ final class OrgInspectorView: NSView {
     private let maxIterField = AppKitText.field()
     private let instructionsView = NSTextView()
     private let artifactsField = AppKitText.field()
-    private let routerNextButton = NSButton(checkboxWithTitle: "Requires router next.json", target: nil, action: nil)
+    private let routerNextButton = NSButton(checkboxWithTitle: "Require decision output (next.json)", target: nil, action: nil)
+    private let shellChecksLabel = AppKitText.label("", style: .muted)
 
     private let fromPopup = AppKitText.popup()
     private let typePopup = AppKitText.popup()
@@ -45,14 +46,14 @@ final class OrgInspectorView: NSView {
     private let approvalButton = NSButton(checkboxWithTitle: "Requires approval", target: nil, action: nil)
 
     private let sectionLabel = AppKitText.label("Inspector", style: .title)
-    private let emptyLabel = AppKitText.label("Select a node or edge on the canvas.", style: .muted)
+    private let emptyLabel = AppKitText.label("Select a step or connection on the canvas to edit it.", style: .muted)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = Theme.surface.cgColor
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: Theme.inspectorWidth).isActive = true
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let border = NSBox()
         border.boxType = .separator
@@ -135,37 +136,41 @@ final class OrgInspectorView: NSView {
 
         if let node = currentNode {
             addStacked(separator())
-            addStacked(AppKitText.label("Node", style: .section))
+            addStacked(AppKitText.label("Step", style: .section))
             fillNodeFields(node)
-            addStacked(FormField(title: "ID", control: nodeIdField))
-            addStacked(FormField(title: "Role", control: roleField))
-            addStacked(FormField(title: "Agent", control: agentPopup))
+            addStacked(FormField(title: "Step ID", control: nodeIdField))
+            addStacked(FormField(title: "Name or role", control: roleField))
+            addStacked(FormField(title: "Coding tool", control: agentPopup))
             addStacked(FormField(title: "Model", control: modelPopup))
-            addStacked(FormField(title: "Max iterations", control: maxIterField))
+            addStacked(FormField(title: "Retry limit", control: maxIterField))
             addStacked(FormField(title: "Instructions", control: wrapTextView(instructionsView, height: 100)))
-            addStacked(FormField(title: "Done artifacts (comma-separated)", control: artifactsField))
+            addStacked(FormField(title: "Required output files (comma-separated)", control: artifactsField))
             routerNextButton.target = self
             routerNextButton.action = #selector(applyNode)
             addStacked(routerNextButton)
+            shellChecksLabel.lineBreakMode = .byWordWrapping
+            shellChecksLabel.maximumNumberOfLines = 0
+            shellChecksLabel.isHidden = shellChecksLabel.stringValue.isEmpty
+            addStacked(shellChecksLabel)
 
-            let apply = PrimaryButton(title: "Apply Node", style: .primary, target: self, action: #selector(applyNode))
-            let entry = PrimaryButton(title: "Make Entry", style: .secondary, target: self, action: #selector(makeEntry))
+            let apply = PrimaryButton(title: "Apply Step", style: .primary, target: self, action: #selector(applyNode))
+            let entry = PrimaryButton(title: "Start Here", style: .secondary, target: self, action: #selector(makeEntry))
             let del = PrimaryButton(title: "Delete", style: .danger, target: self, action: #selector(deleteNode))
             addStacked(buttonRow([apply, entry]))
             addStacked(del)
         } else if let edge = currentEdge {
             addStacked(separator())
-            addStacked(AppKitText.label("Edge", style: .section))
+            addStacked(AppKitText.label("Connection", style: .section))
             fillEdgeFields(edge)
-            addStacked(FormField(title: "From", control: fromPopup))
-            addStacked(FormField(title: "Type", control: typePopup))
-            addStacked(FormField(title: "To", control: toPopup))
-            addStacked(FormField(title: "Targets (comma-separated)", control: targetsField))
-            addStacked(FormField(title: "On", control: onPopup))
+            addStacked(FormField(title: "From step", control: fromPopup))
+            addStacked(FormField(title: "Connection type", control: typePopup))
+            addStacked(FormField(title: "Next step", control: toPopup))
+            addStacked(FormField(title: "Possible next steps (comma-separated)", control: targetsField))
+            addStacked(FormField(title: "Continue when", control: onPopup))
             approvalButton.target = self
             approvalButton.action = #selector(applyEdge)
             addStacked(approvalButton)
-            let apply = PrimaryButton(title: "Apply Edge", style: .primary, target: self, action: #selector(applyEdge))
+            let apply = PrimaryButton(title: "Apply Connection", style: .primary, target: self, action: #selector(applyEdge))
             let del = PrimaryButton(title: "Delete", style: .danger, target: self, action: #selector(deleteEdge))
             addStacked(apply)
             addStacked(del)
@@ -203,6 +208,20 @@ final class OrgInspectorView: NSView {
             if case .routerNext = $0 { return true }
             return false
         } ? .on : .off
+
+        let shellCommands = node.done.checks.compactMap { check -> String? in
+            if case .shell(let command) = check { return command }
+            return nil
+        }
+        if shellCommands.isEmpty {
+            shellChecksLabel.stringValue = ""
+        } else {
+            let preview = shellCommands.map { command -> String in
+                command.count > 60 ? "\(command.prefix(60))…" : command
+            }.joined(separator: "; ")
+            shellChecksLabel.stringValue = "Also preserves \(shellCommands.count) command-line check(s): \(preview)"
+        }
+        shellChecksLabel.isHidden = shellChecksLabel.stringValue.isEmpty
     }
 
     private func populateAgentPopup(selected: String) {
@@ -212,7 +231,7 @@ final class OrgInspectorView: NSView {
             names.insert(selected, at: 0)
         }
         if names.isEmpty {
-            agentPopup.addItem(withTitle: selected.isEmpty ? "(no agents)" : selected)
+            agentPopup.addItem(withTitle: selected.isEmpty ? "(no coding tools)" : selected)
             return
         }
         agentPopup.addItems(withTitles: names)
@@ -251,9 +270,9 @@ final class OrgInspectorView: NSView {
 
         let defaultLabel: String
         if let agentDefault = agent?.defaultModel, !agentDefault.isEmpty {
-            defaultLabel = "(agent default: \(agentDefault))"
+            defaultLabel = "(coding tool default: \(agentDefault))"
         } else {
-            defaultLabel = "(agent default)"
+            defaultLabel = "(coding tool default)"
         }
         let none = NSMenuItem(title: defaultLabel, action: nil, keyEquivalent: "")
         none.representedObject = "" as NSString
@@ -298,8 +317,8 @@ final class OrgInspectorView: NSView {
         fromPopup.selectItem(withTitle: edge.from)
 
         typePopup.removeAllItems()
-        typePopup.addItems(withTitles: ["fixed", "router"])
-        typePopup.selectItem(withTitle: edge.type.rawValue)
+        typePopup.addItems(withTitles: ["Next step", "Decision"])
+        typePopup.selectItem(at: edge.type == .router ? 1 : 0)
         typePopup.target = self
         typePopup.action = #selector(edgeTypeChanged)
 
@@ -309,8 +328,13 @@ final class OrgInspectorView: NSView {
 
         targetsField.stringValue = edge.targets.joined(separator: ", ")
         onPopup.removeAllItems()
-        onPopup.addItems(withTitles: ["always", "success", "fail", "reject"])
-        onPopup.selectItem(withTitle: edge.on.rawValue)
+        onPopup.addItems(withTitles: ["Always", "After success", "After failure", "After rejection"])
+        switch edge.on {
+        case .always: onPopup.selectItem(at: 0)
+        case .success: onPopup.selectItem(at: 1)
+        case .fail: onPopup.selectItem(at: 2)
+        case .reject: onPopup.selectItem(at: 3)
+        }
         approvalButton.state = edge.requiresApproval ? .on : .off
     }
 
@@ -319,7 +343,7 @@ final class OrgInspectorView: NSView {
     }
 
     private func updateEdgeFieldVisibility() {
-        let isRouter = typePopup.titleOfSelectedItem == "router"
+        let isRouter = typePopup.indexOfSelectedItem == 1
         toPopup.superview?.isHidden = isRouter
         targetsField.superview?.isHidden = !isRouter
     }
@@ -329,20 +353,23 @@ final class OrgInspectorView: NSView {
     }
 
     @objc private func applyNode() {
-        guard currentNode != nil else { return }
+        guard let existing = currentNode else { return }
         let artifacts = artifactsField.stringValue
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        var checks: [DoneCheck] = artifacts.map { .artifact($0) }
-        if routerNextButton.state == .on { checks.append(.routerNext) }
+        let done = DoneCheckMerge.applyArtifactEdits(
+            existing: existing.done,
+            artifactPaths: artifacts,
+            includeRouterNext: routerNextButton.state == .on
+        )
         let node = OrgNode(
             id: nodeIdField.stringValue,
             role: roleField.stringValue,
             runner: agentPopup.titleOfSelectedItem ?? currentNode?.runner ?? "",
             model: selectedModelSlug(),
             instructions: instructionsView.string,
-            done: .allOf(checks),
+            done: done,
             maxIterations: Int(maxIterField.stringValue) ?? 3
         )
         delegate?.orgInspector(self, didUpdateNode: node)
@@ -361,7 +388,7 @@ final class OrgInspectorView: NSView {
     @objc private func applyEdge() {
         guard var edge = currentEdge else { return }
         edge.from = fromPopup.titleOfSelectedItem ?? edge.from
-        edge.type = typePopup.titleOfSelectedItem == "router" ? .router : .fixed
+        edge.type = typePopup.indexOfSelectedItem == 1 ? .router : .fixed
         if edge.type == .fixed {
             edge.to = toPopup.titleOfSelectedItem
             edge.targets = []
@@ -372,7 +399,12 @@ final class OrgInspectorView: NSView {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
         }
-        edge.on = EdgeCondition(rawValue: onPopup.titleOfSelectedItem ?? "success") ?? .success
+        switch onPopup.indexOfSelectedItem {
+        case 0: edge.on = .always
+        case 2: edge.on = .fail
+        case 3: edge.on = .reject
+        default: edge.on = .success
+        }
         edge.requiresApproval = approvalButton.state == .on
         delegate?.orgInspector(self, didUpdateEdge: edge)
     }

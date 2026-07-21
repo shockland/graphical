@@ -28,6 +28,19 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         view.layer?.backgroundColor = Theme.background.cgColor
 
         let title = AppKitText.label("Agents", style: .title)
+        let setupToolButton = PrimaryButton(
+            title: "Set up coding tool…",
+            style: .secondary,
+            target: self,
+            action: #selector(requestCodingToolSetup)
+        )
+        setupToolButton.setAccessibilityLabel("Set up coding tool")
+        let titleRow = NSStackView(views: [title, NSView(), setupToolButton])
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = 8
+        titleRow.translatesAutoresizingMaskIntoConstraints = false
+
         let subtitle = AppKitText.label(
             "CLI agents with a kind and default model. Nodes bind to an agent by name.",
             style: .muted
@@ -47,7 +60,10 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         listScroll.documentView = table
         listScroll.hasVerticalScroller = true
         listScroll.borderType = .bezelBorder
-        listScroll.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        let listWidth = listScroll.widthAnchor.constraint(equalToConstant: 180)
+        listWidth.priority = .defaultHigh
+        listWidth.isActive = true
+        listScroll.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         argsView.isRichText = false
         argsView.font = Theme.monoFont(ofSize: 12)
@@ -73,7 +89,7 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         let editor = NSStackView(views: [
             nameLabel,
             FormField(title: "Command", control: commandField),
-            FormField(title: "Args (one per line)", control: argsScroll),
+            FormField(title: "Args (one per line; YAML list if multiline)", control: argsScroll),
             FormField(title: "cwd", control: cwdField),
             FormField(title: "Kind", control: kindPopup),
             FormField(title: "Default model", control: defaultModelPopup),
@@ -96,26 +112,49 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         body.spacing = 16
         body.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [title, subtitle, body])
+        let stack = NSStackView(views: [titleRow, subtitle, body])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
+
+        titleRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        scroll.documentView = stack
+        view.addSubview(scroll)
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            editor.widthAnchor.constraint(greaterThanOrEqualToConstant: 420),
-            listScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 280),
-            argsScroll.widthAnchor.constraint(equalToConstant: 420),
-            commandField.widthAnchor.constraint(equalToConstant: 420),
-            cwdField.widthAnchor.constraint(equalToConstant: 420),
-            kindPopup.widthAnchor.constraint(equalToConstant: 420),
-            defaultModelPopup.widthAnchor.constraint(equalToConstant: 420),
-            newNameField.widthAnchor.constraint(equalToConstant: 220)
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            stack.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor, constant: -32),
+            stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentView.bottomAnchor, constant: -16),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor, constant: -16),
+
+            listScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
+            argsScroll.widthAnchor.constraint(equalTo: editor.widthAnchor),
+            commandField.widthAnchor.constraint(equalTo: editor.widthAnchor),
+            cwdField.widthAnchor.constraint(equalTo: editor.widthAnchor),
+            kindPopup.widthAnchor.constraint(equalTo: editor.widthAnchor),
+            defaultModelPopup.widthAnchor.constraint(equalTo: editor.widthAnchor),
+            newNameField.widthAnchor.constraint(equalToConstant: 180)
         ])
+        let editorMinWidth = editor.widthAnchor.constraint(greaterThanOrEqualToConstant: 240)
+        editorMinWidth.priority = .defaultLow
+        editorMinWidth.isActive = true
+        editor.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }
 
     func reload() {
@@ -128,6 +167,10 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
             table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
         }
         loadDraft()
+    }
+
+    @objc private func requestCodingToolSetup() {
+        model.requestCodingToolSetup()
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { names.count }
@@ -155,7 +198,7 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         }
         nameLabel.stringValue = selected
         commandField.stringValue = template.command
-        argsView.string = template.args.joined(separator: "\n")
+        argsView.string = RunnerArgsEditing.encodeForEditor(template.args)
         cwdField.stringValue = template.cwd ?? "{{project_root}}"
         selectKind(template.kind)
         refreshDefaultModelPopup(selected: template.defaultModel, kind: template.kind)
@@ -238,17 +281,17 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
 
     @objc private func applyDraft() {
         guard let selected, var project = model.project else { return }
-        let args = argsView.string
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map(String.init)
-        project.runners.runners[selected] = RunnerTemplate(
-            command: commandField.stringValue,
-            args: args,
-            cwd: cwdField.stringValue,
-            env: project.runners.runners[selected]?.env ?? [:],
-            kind: selectedKind(),
-            defaultModel: selectedDefaultModelSlug()
+        let template = RunnerArgsEditing.repairingShreddedShellScript(
+            RunnerTemplate(
+                command: commandField.stringValue,
+                args: RunnerArgsEditing.decodeFromEditor(argsView.string),
+                cwd: cwdField.stringValue,
+                env: project.runners.runners[selected]?.env ?? [:],
+                kind: selectedKind(),
+                defaultModel: selectedDefaultModelSlug()
+            )
         )
+        project.runners.runners[selected] = template
         model.updateRunners(project.runners)
         model.saveProject()
     }
@@ -283,6 +326,5 @@ private extension NSBox {
         self.init(frame: .zero)
         boxType = .separator
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 420).isActive = true
     }
 }

@@ -15,8 +15,8 @@ enum Theme {
     static let warning = NSColor(srgbRed: 0.851, green: 0.469, blue: 0.024, alpha: 1) // #D97706
     static let warningSoft = NSColor(srgbRed: 0.851, green: 0.469, blue: 0.024, alpha: 0.12)
 
-    static let railWidth: CGFloat = 220
-    static let inspectorWidth: CGFloat = 300
+    static let railWidth: CGFloat = 180
+    static let inspectorWidth: CGFloat = 260
     static let topBarHeight: CGFloat = 44
     static let statusBarHeight: CGFloat = 28
     static let cornerRadius: CGFloat = 10

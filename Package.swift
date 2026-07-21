@@ -43,6 +43,9 @@ let package = Package(
                 "GraphicalDomain",
                 "GraphicalEngine",
                 "GraphicalCLI"
+            ],
+            resources: [
+                .process("Resources")
             ]
         ),
         .testTarget(

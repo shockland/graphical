@@ -1,4 +1,5 @@
 import AppKit
+import GraphicalDomain
 
 @MainActor
 protocol NavRailViewDelegate: AnyObject {
@@ -31,6 +32,12 @@ final class NavRailView: NSView {
     private var currentTab: AppModel.AppTab = .org
     private var hasProject = false
     private var isRunning = false
+    private let recentDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -92,9 +99,12 @@ final class NavRailView: NSView {
         addSubview(openBtn)
         addSubview(createBtn)
 
-        // Width is owned by MainWindowController so the rail cannot collapse.
-        setContentHuggingPriority(.required, for: .horizontal)
-        setContentCompressionResistancePriority(.required, for: .horizontal)
+        // Preferred width is owned by MainWindowController; allow soft shrink on
+        // very narrow windows instead of overflowing the screen.
+        setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        openBtn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        createBtn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         NSLayoutConstraint.activate([
             border.topAnchor.constraint(equalTo: topAnchor),
@@ -162,23 +172,104 @@ final class NavRailView: NSView {
         }
         if hasProject {
             for run in model.recentRuns.prefix(6) {
-                let btn = NSButton(
-                    title: "\(run.status.rawValue) · \(run.id.prefix(8))",
-                    target: self,
-                    action: #selector(recentTapped(_:))
-                )
-                btn.bezelStyle = .inline
-                btn.isBordered = false
-                btn.font = Theme.bodyFont(ofSize: 11)
-                btn.contentTintColor = Theme.muted
-                btn.alignment = .left
-                btn.identifier = NSUserInterfaceItemIdentifier(run.id)
-                btn.translatesAutoresizingMaskIntoConstraints = false
-                recentStack.addArrangedSubview(btn)
+                recentStack.addArrangedSubview(makeRecentRunButton(run))
             }
         }
 
         updateSelectionAppearance()
+    }
+
+    /// Cheap update for run-progress ticks (plans/013): only the Run tab's running
+    /// dot needs to change on most ticks, so avoid `reload(from:)`'s recent-runs
+    /// subview teardown/rebuild.
+    func updateRunningIndicator(isRunning: Bool) {
+        guard self.isRunning != isRunning else { return }
+        self.isRunning = isRunning
+        updateSelectionAppearance()
+    }
+
+    private func makeRecentRunButton(_ run: RunRecord) -> NSView {
+        let shortId = String(run.id.prefix(8))
+        let preview = run.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let subtitle: String
+        if preview.isEmpty {
+            subtitle = recentDateFormatter.string(from: run.createdAt)
+        } else if preview.count > 28 {
+            subtitle = String(preview.prefix(28)) + "…"
+        } else {
+            subtitle = preview
+        }
+        let statusColor = colorForRunStatus(run.status)
+        let symbol = symbolForRunStatus(run.status)
+
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: run.status.rawValue)
+        icon.contentTintColor = statusColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = AppKitText.label(shortId, style: .caption)
+        titleLabel.textColor = statusColor
+        titleLabel.font = Theme.bodyFont(ofSize: 11, weight: .semibold)
+
+        let subtitleLabel = AppKitText.label(subtitle, style: .caption)
+        subtitleLabel.textColor = Theme.muted
+        subtitleLabel.lineBreakMode = .byTruncatingTail
+
+        let textStack = NSStackView(views: [titleLabel, subtitleLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 1
+
+        let row = NSStackView(views: [icon, textStack])
+        row.orientation = .horizontal
+        row.spacing = 6
+        row.alignment = .centerY
+
+        let button = NSButton(title: "", target: self, action: #selector(recentTapped(_:)))
+        button.bezelStyle = .inline
+        button.isBordered = false
+        button.identifier = NSUserInterfaceItemIdentifier(run.id)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(row)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 14),
+            icon.heightAnchor.constraint(equalToConstant: 14),
+            row.leadingAnchor.constraint(equalTo: button.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: button.trailingAnchor),
+            row.topAnchor.constraint(equalTo: button.topAnchor),
+            row.bottomAnchor.constraint(equalTo: button.bottomAnchor),
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 34)
+        ])
+        return button
+    }
+
+    private func colorForRunStatus(_ status: RunStatus) -> NSColor {
+        switch status {
+        case .succeeded:
+            return Theme.accent
+        case .failed:
+            return Theme.danger
+        case .cancelled:
+            return Theme.muted
+        case .running, .pending, .awaitingApproval:
+            return Theme.warning
+        }
+    }
+
+    private func symbolForRunStatus(_ status: RunStatus) -> String {
+        switch status {
+        case .succeeded:
+            return "checkmark.circle.fill"
+        case .failed:
+            return "xmark.circle.fill"
+        case .cancelled:
+            return "stop.circle"
+        case .running, .pending:
+            return "play.circle.fill"
+        case .awaitingApproval:
+            return "hand.raised.fill"
+        }
     }
 
     private func makeTabButton(_ tab: AppModel.AppTab) -> NSButton {
@@ -194,7 +285,8 @@ final class NavRailView: NSView {
         button.wantsLayer = true
         button.layer?.cornerRadius = Theme.controlRadius
         button.heightAnchor.constraint(equalToConstant: 34).isActive = true
-        button.widthAnchor.constraint(equalToConstant: Theme.railWidth - 24).isActive = true
+        // Fill the rail column instead of a hard-coded width that fights shrink.
+        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
         return button
     }
 

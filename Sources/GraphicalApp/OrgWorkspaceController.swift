@@ -7,9 +7,14 @@ final class OrgWorkspaceController: NSObject {
     let view = NSView()
     private let canvas = OrgCanvasView()
     private let inspector = OrgInspectorView()
+    private let projectGuide = ProjectGuideView()
     private let toolbar = NSStackView()
+    private let fixedButton: PrimaryButton
+    private let routerButton: PrimaryButton
 
     override init() {
+        fixedButton = PrimaryButton(title: "Connect Steps", style: .secondary, target: nil, action: nil)
+        routerButton = PrimaryButton(title: "Add Decision", style: .secondary, target: nil, action: nil)
         super.init()
         view.translatesAutoresizingMaskIntoConstraints = false
         view.wantsLayer = true
@@ -17,6 +22,7 @@ final class OrgWorkspaceController: NSObject {
 
         canvas.delegate = self
         inspector.delegate = self
+        projectGuide.delegate = self
 
         toolbar.orientation = .horizontal
         toolbar.spacing = 8
@@ -28,38 +34,72 @@ final class OrgWorkspaceController: NSObject {
         let run = PrimaryButton(title: "Play", style: .primary, target: self, action: #selector(runGraph))
         run.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Play")
         run.imagePosition = .imageLeading
-        let addNode = PrimaryButton(title: "Add Node", style: .secondary, target: self, action: #selector(addNode))
-        let fixed = PrimaryButton(title: "Connect Fixed", style: .secondary, target: self, action: #selector(connectFixed))
-        let router = PrimaryButton(title: "Connect Router", style: .secondary, target: self, action: #selector(connectRouter))
-        let hint = AppKitText.label("⌘-drag to pan · ⌘-scroll to zoom", style: .muted)
+        let addNode = PrimaryButton(title: "Add Step", style: .secondary, target: self, action: #selector(addNode))
+        fixedButton.target = self
+        fixedButton.action = #selector(connectFixed)
+        routerButton.target = self
+        routerButton.action = #selector(connectRouter)
+        let fit = PrimaryButton(title: "Fit", style: .secondary, target: self, action: #selector(fitCanvas))
+        fit.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: "Fit")
+        fit.imagePosition = .imageLeading
+        let hint = AppKitText.label("⌘-drag pan · ⌘-scroll zoom · Del delete", style: .muted)
+        hint.lineBreakMode = .byTruncatingTail
+        hint.setContentCompressionResistancePriority(.init(rawValue: 50), for: .horizontal)
+        hint.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        for control in [addNode, fixedButton, routerButton, fit, run] as [NSView] {
+            control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
         toolbar.addArrangedSubview(addNode)
-        toolbar.addArrangedSubview(fixed)
-        toolbar.addArrangedSubview(router)
+        toolbar.addArrangedSubview(fixedButton)
+        toolbar.addArrangedSubview(routerButton)
+        toolbar.addArrangedSubview(fit)
         toolbar.addArrangedSubview(hint)
         toolbar.addArrangedSubview(spacer)
         toolbar.addArrangedSubview(run)
+        toolbar.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        toolbar.clipsToBounds = true
 
         let border = NSBox()
         border.boxType = .separator
         border.translatesAutoresizingMaskIntoConstraints = false
 
         view.clipsToBounds = true
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        canvas.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        canvas.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         // Canvas under chrome so a bad frame cannot paint over the toolbar/inspector.
+        // Guide floats over the canvas as a compact card (not a full-width band).
         view.addSubview(canvas)
         view.addSubview(toolbar)
         view.addSubview(border)
+        view.addSubview(projectGuide)
         view.addSubview(inspector)
 
-        inspector.setContentHuggingPriority(.required, for: .horizontal)
-        inspector.setContentCompressionResistancePriority(.required, for: .horizontal)
+        inspector.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        inspector.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Keep the floating card from stretching, but never higher than the
+        // edge pins on `view` / canvas — `.required` hugging was able to win
+        // fights and collapse the workspace into a trailing strip.
+        projectGuide.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        // Prefer shrinking the card over forcing the window past the display.
+        projectGuide.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let inspectorWidth = inspector.widthAnchor.constraint(equalToConstant: Theme.inspectorWidth)
+        inspectorWidth.priority = .defaultHigh
+        let guideWidth = projectGuide.widthAnchor.constraint(equalToConstant: 280)
+        guideWidth.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
             inspector.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             inspector.topAnchor.constraint(equalTo: view.topAnchor),
             inspector.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            inspector.widthAnchor.constraint(equalToConstant: Theme.inspectorWidth),
+            inspectorWidth,
+            inspector.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.38),
+            inspector.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
 
             toolbar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             toolbar.trailingAnchor.constraint(equalTo: inspector.leadingAnchor),
@@ -73,12 +113,23 @@ final class OrgWorkspaceController: NSObject {
             canvas.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             canvas.trailingAnchor.constraint(equalTo: inspector.leadingAnchor),
             canvas.topAnchor.constraint(equalTo: border.bottomAnchor),
-            canvas.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            canvas.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            // Compact readiness card: trailing-aligned over the canvas.
+            projectGuide.trailingAnchor.constraint(equalTo: inspector.leadingAnchor, constant: -8),
+            projectGuide.topAnchor.constraint(equalTo: canvas.topAnchor, constant: 8),
+            projectGuide.leadingAnchor.constraint(greaterThanOrEqualTo: canvas.leadingAnchor, constant: 8),
+            guideWidth,
+            projectGuide.widthAnchor.constraint(lessThanOrEqualToConstant: 320),
+            projectGuide.widthAnchor.constraint(greaterThanOrEqualToConstant: 220)
         ])
     }
 
     func reload() {
         guard let project = model.project else { return }
+        if let readiness = model.projectReadiness {
+            projectGuide.reload(readiness: readiness, projectRoot: project.root)
+        }
         canvas.configure(
             org: project.org,
             layout: model.layout,
@@ -86,6 +137,13 @@ final class OrgWorkspaceController: NSObject {
             selectedEdgeId: model.selectedEdgeId,
             activeRunNodeId: model.isRunning ? model.run?.activeNodeId : nil
         )
+        syncToolButtons()
+        if model.consumeFitCanvasRequest() {
+            canvas.fitToContent()
+        } else if model.shouldCenterSelection {
+            centerSelection(in: project.org)
+            model.consumeCenterSelectionRequest()
+        }
         inspector.reload(
             projectName: project.config.name,
             goal: model.goalDraft,
@@ -96,9 +154,30 @@ final class OrgWorkspaceController: NSObject {
         )
     }
 
+    private func centerSelection(in org: OrgGraph) {
+        if let nodeId = model.selectedNodeId {
+            canvas.centerOn(nodeId: nodeId)
+        } else if let edgeId = model.selectedEdgeId,
+                  let edge = org.edges.first(where: { $0.id == edgeId }) {
+            canvas.centerOn(nodeId: edge.from)
+        }
+    }
+
+    private func syncToolButtons() {
+        fixedButton.isActive = canvas.tool == .connectFixed
+        routerButton.isActive = canvas.tool == .connectRouter
+    }
+
     @objc private func addNode() { model.addNode() }
-    @objc private func connectFixed() { canvas.setTool(.connectFixed) }
-    @objc private func connectRouter() { canvas.setTool(.connectRouter) }
+    @objc private func connectFixed() {
+        canvas.setTool(canvas.tool == .connectFixed ? .select : .connectFixed)
+        syncToolButtons()
+    }
+    @objc private func connectRouter() {
+        canvas.setTool(canvas.tool == .connectRouter ? .select : .connectRouter)
+        syncToolButtons()
+    }
+    @objc private func fitCanvas() { model.requestFitCanvas() }
     @objc private func runGraph() {
         model.play()
     }
@@ -121,23 +200,21 @@ extension OrgWorkspaceController: OrgCanvasViewDelegate {
 
     func orgCanvas(_ canvas: OrgCanvasView, didCreateEdgeFrom from: String, to: String, router: Bool) {
         if router {
-            model.addRouterEdge(from: from)
-            if let edge = model.project?.org.edges.last(where: { $0.from == from && $0.type == .router }) {
-                model.replaceEdge(
-                    OrgEdge(
-                        id: edge.id,
-                        from: from,
-                        type: .router,
-                        targets: [to],
-                        on: edge.on,
-                        pass: edge.pass,
-                        requiresApproval: edge.requiresApproval
-                    )
-                )
-            }
+            model.addRouterEdge(from: from, to: to)
         } else {
             model.addFixedEdge(from: from, to: to)
         }
+        canvas.setTool(.select)
+        syncToolButtons()
+    }
+
+    func orgCanvasDidRequestDeleteSelection(_ canvas: OrgCanvasView) {
+        model.deleteSelection()
+    }
+
+    func orgCanvasDidRequestCancelConnect(_ canvas: OrgCanvasView) {
+        syncToolButtons()
+        model.notify()
     }
 }
 
@@ -168,5 +245,27 @@ extension OrgWorkspaceController: OrgInspectorViewDelegate {
 
     func orgInspector(_ inspector: OrgInspectorView, didUpdateGoal goal: String) {
         model.goalDraft = goal
+        if let project = model.project, let readiness = model.projectReadiness {
+            projectGuide.reload(readiness: readiness, projectRoot: project.root)
+        }
+    }
+}
+
+extension OrgWorkspaceController: ProjectGuideViewDelegate {
+    func projectGuide(_ guide: ProjectGuideView, didRequest action: ProjectGuideView.Action) {
+        switch action {
+        case .setGoal:
+            model.showRunGoalEditor()
+        case .chooseTool:
+            model.requestCodingToolSetup()
+        case .fixWorkflow:
+            if let issue = model.validationIssues.first {
+                model.focusValidationIssue(issue)
+            } else {
+                model.selectedTab = .org
+            }
+        case .run:
+            model.play()
+        }
     }
 }

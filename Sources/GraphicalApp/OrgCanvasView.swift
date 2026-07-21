@@ -7,6 +7,8 @@ protocol OrgCanvasViewDelegate: AnyObject {
     func orgCanvas(_ canvas: OrgCanvasView, didMoveNode id: String, to point: CGPoint, ended: Bool)
     func orgCanvasDidRequestAddNode(_ canvas: OrgCanvasView)
     func orgCanvas(_ canvas: OrgCanvasView, didCreateEdgeFrom: String, to: String, router: Bool)
+    func orgCanvasDidRequestDeleteSelection(_ canvas: OrgCanvasView)
+    func orgCanvasDidRequestCancelConnect(_ canvas: OrgCanvasView)
 }
 
 enum OrgCanvasTool {
@@ -80,6 +82,72 @@ final class OrgCanvasView: NSView {
         connectFromId = nil
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
+    }
+
+    func select(nodeId: String?, edgeId: String?) {
+        selectedNodeId = nodeId
+        selectedEdgeId = edgeId
+        if nodeId != nil || edgeId != nil {
+            startSelectionPulse()
+        }
+        needsDisplay = true
+    }
+
+    func fitToContent() {
+        guard !layout.nodes.isEmpty else {
+            resetZoom()
+            return
+        }
+        var contentBounds = CGRect.null
+        for (_, pos) in layout.nodes {
+            contentBounds = contentBounds.union(nodeRect(pos))
+        }
+        let padding: CGFloat = 48
+        contentBounds = contentBounds.insetBy(dx: -padding, dy: -padding)
+        guard contentBounds.width > 0, contentBounds.height > 0, bounds.width > 0, bounds.height > 0 else {
+            return
+        }
+        let scaleX = bounds.width / contentBounds.width
+        let scaleY = bounds.height / contentBounds.height
+        scale = min(2.2, max(0.45, min(scaleX, scaleY)))
+        offset = CGPoint(
+            x: (bounds.width - contentBounds.width * scale) / 2 - contentBounds.minX * scale,
+            y: (bounds.height - contentBounds.height * scale) / 2 - contentBounds.minY * scale
+        )
+        needsDisplay = true
+    }
+
+    func resetZoom() {
+        scale = 1
+        offset = .zero
+        needsDisplay = true
+    }
+
+    func centerOn(nodeId: String) {
+        guard let pos = layout.nodes[nodeId] else { return }
+        let rect = nodeRect(pos)
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        offset = CGPoint(
+            x: bounds.width / 2 - center.x * scale,
+            y: bounds.height / 2 - center.y * scale
+        )
+        needsDisplay = true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 51, 117: // Delete, Forward Delete
+            if selectedNodeId != nil || selectedEdgeId != nil {
+                delegate?.orgCanvasDidRequestDeleteSelection(self)
+            }
+        case 53: // Escape
+            if tool != .select || connectFromId != nil {
+                setTool(.select)
+                delegate?.orgCanvasDidRequestCancelConnect(self)
+            }
+        default:
+            super.keyDown(with: event)
+        }
     }
 
     // MARK: - Drawing

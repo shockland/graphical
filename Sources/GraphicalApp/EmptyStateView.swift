@@ -15,26 +15,31 @@ final class EmptyStateView: NSView {
         layer?.backgroundColor = Theme.background.cgColor
         translatesAutoresizingMaskIntoConstraints = false
 
+        let iconView = NSImageView()
+        iconView.image = AppIcon.image
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
         let brand = AppKitText.label("Graphical", style: .brand)
         brand.alignment = .center
 
         let subtitle = AppKitText.label(
-            "Open or create a project, edit the org on the canvas, then Play to run handoffs from the entry node.",
+            "Describe a result, choose a coding tool, and Graphical guides Planner → Implementer → Reviewer.",
             style: .body
         )
         subtitle.textColor = Theme.muted
         subtitle.alignment = .center
         subtitle.maximumNumberOfLines = 3
 
-        let open = PrimaryButton(title: "Open Project…", style: .primary, target: self, action: #selector(openTapped))
-        let create = PrimaryButton(title: "Create Project…", style: .secondary, target: self, action: #selector(createTapped))
+        let create = PrimaryButton(title: "Create Project…", style: .primary, target: self, action: #selector(createTapped))
+        let open = PrimaryButton(title: "Open Existing…", style: .secondary, target: self, action: #selector(openTapped))
 
-        let actions = NSStackView(views: [open, create])
+        let actions = NSStackView(views: [create, open])
         actions.orientation = .horizontal
         actions.spacing = 10
         actions.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [brand, subtitle, actions])
+        let stack = NSStackView(views: [iconView, brand, subtitle, actions])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 14
@@ -44,6 +49,8 @@ final class EmptyStateView: NSView {
         NSLayoutConstraint.activate([
             stack.centerXAnchor.constraint(equalTo: centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 96),
+            iconView.heightAnchor.constraint(equalToConstant: 96),
             subtitle.widthAnchor.constraint(lessThanOrEqualToConstant: 420)
         ])
     }
