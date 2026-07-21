@@ -135,6 +135,19 @@ public actor RunEngine {
     private var invokeStartedAt: Date?
     private var agentOutputReceived = false
     private var invokeNodeId: String?
+    /// Incomplete stdout/stderr lines spanning `ProcessOutputChunk`s.
+    private var stdoutLineRemainder = ""
+    private var stderrLineRemainder = ""
+    private var streamJSONFormatter = CursorStreamJSONFormatter()
+    /// Coalesces tiny stream-json assistant deltas into fewer live-log lines.
+    private var pendingAssistantText = ""
+    private var lastStreamPublishAt: Date?
+    /// Soft cap on in-memory live log lines (CLI text is never written to SQLite).
+    public static let maxLiveLogLines = 2_000
+    /// Minimum interval between progress publishes while streaming agent output.
+    private static let streamPublishMinInterval: TimeInterval = 0.1
+    /// Flush coalesced assistant deltas once they reach this size.
+    private static let assistantCoalesceLimit = 120
 
     public init(
         store: TraceStore,
@@ -397,7 +410,9 @@ public actor RunEngine {
                         await self?.streamAgentOutput(chunk, nodeId: nodeId)
                     }
                 )
+                await flushAgentOutput(nodeId: nodeId)
             } catch {
+                await flushAgentOutput(nodeId: nodeId)
                 stopInvokeHeartbeat()
                 throw error
             }
@@ -783,6 +798,9 @@ public actor RunEngine {
 
     private func log(_ line: String) {
         liveLog.append(line)
+        if liveLog.count > Self.maxLiveLogLines {
+            liveLog.removeFirst(liveLog.count - Self.maxLiveLogLines)
+        }
     }
 
     /// Agent output is intentionally kept in the in-memory live log only. Durable
@@ -791,11 +809,28 @@ public actor RunEngine {
         let normalized = chunk.text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
-        var lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        if lines.last?.isEmpty == true {
-            lines.removeLast()
+        guard !normalized.isEmpty else { return }
+
+        let isStdout = chunk.stream == .stdout
+        let remainder = isStdout ? stdoutLineRemainder : stderrLineRemainder
+        let combined = remainder + normalized
+        var parts = combined.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let incomplete: String
+        if combined.hasSuffix("\n") {
+            incomplete = ""
+            if parts.last?.isEmpty == true {
+                parts.removeLast()
+            }
+        } else {
+            incomplete = parts.popLast() ?? ""
         }
-        guard !lines.isEmpty else { return }
+        if isStdout {
+            stdoutLineRemainder = incomplete
+        } else {
+            stderrLineRemainder = incomplete
+        }
+
+        guard !parts.isEmpty else { return }
 
         if !agentOutputReceived {
             agentOutputReceived = true
@@ -803,10 +838,104 @@ public actor RunEngine {
             currentPhase = invokePhaseLabel()
         }
 
-        let streamLabel = chunk.stream == .stdout ? "stdout" : "stderr"
-        for line in lines {
-            log("[\(nodeId) \(streamLabel)] \(line)")
+        let streamLabel = isStdout ? "stdout" : "stderr"
+        var appended = 0
+        for part in parts {
+            appended += appendFormattedAgentLine(part, nodeId: nodeId, streamLabel: streamLabel)
         }
+        if appended > 0 {
+            await publishStreamProgress(force: false)
+        }
+    }
+
+    /// Flushes incomplete line buffers and coalesced assistant text after invoke ends.
+    private func flushAgentOutput(nodeId: String) async {
+        let leftovers: [(String, String)] = [
+            (stdoutLineRemainder, "stdout"),
+            (stderrLineRemainder, "stderr")
+        ]
+        stdoutLineRemainder = ""
+        stderrLineRemainder = ""
+
+        var appended = 0
+        for (text, streamLabel) in leftovers where !text.isEmpty {
+            if !agentOutputReceived {
+                agentOutputReceived = true
+                log("[\(nodeId)] receiving agent output…")
+                currentPhase = invokePhaseLabel()
+            }
+            appended += appendFormattedAgentLine(text, nodeId: nodeId, streamLabel: streamLabel)
+        }
+        appended += flushPendingAssistantText(nodeId: nodeId)
+        if appended > 0 {
+            await publishStreamProgress(force: true)
+        }
+    }
+
+    @discardableResult
+    private func appendFormattedAgentLine(
+        _ line: String,
+        nodeId: String,
+        streamLabel: String
+    ) -> Int {
+        // stderr stays raw; stream-json lives on stdout.
+        if streamLabel == "stderr" {
+            flushPendingAssistantText(nodeId: nodeId)
+            log("[\(nodeId) \(streamLabel)] \(line)")
+            return 1
+        }
+
+        switch streamJSONFormatter.format(line: line) {
+        case .passthrough:
+            flushPendingAssistantText(nodeId: nodeId)
+            log("[\(nodeId) \(streamLabel)] \(line)")
+            return 1
+        case .skip:
+            return 0
+        case .display(let pieces):
+            var count = flushPendingAssistantText(nodeId: nodeId)
+            for piece in pieces {
+                log("[\(nodeId) \(streamLabel)] \(piece)")
+                count += 1
+            }
+            return count
+        case .assistantText(let pieces):
+            for piece in pieces {
+                if pendingAssistantText.isEmpty {
+                    pendingAssistantText = piece
+                } else {
+                    pendingAssistantText += piece
+                }
+            }
+            if pendingAssistantText.count >= Self.assistantCoalesceLimit {
+                flushPendingAssistantText(nodeId: nodeId)
+            }
+            // Count as activity even while text is still coalescing off the log.
+            return pieces.isEmpty ? 0 : 1
+        }
+    }
+
+    @discardableResult
+    private func flushPendingAssistantText(nodeId: String) -> Int {
+        guard !pendingAssistantText.isEmpty else { return 0 }
+        let text = pendingAssistantText
+        pendingAssistantText = ""
+        log("[\(nodeId) stdout] \(text)")
+        return 1
+    }
+
+    private func publishStreamProgress(force: Bool) async {
+        let now = Date()
+        if !force,
+           let last = lastStreamPublishAt,
+           now.timeIntervalSince(last) < Self.streamPublishMinInterval {
+            return
+        }
+        // Flush coalesced deltas so the progress snapshot includes latest text.
+        if let nodeId = invokeNodeId {
+            flushPendingAssistantText(nodeId: nodeId)
+        }
+        lastStreamPublishAt = now
         await publishProgress()
     }
 
@@ -815,6 +944,11 @@ public actor RunEngine {
         invokeNodeId = nodeId
         invokeStartedAt = Date()
         agentOutputReceived = false
+        stdoutLineRemainder = ""
+        stderrLineRemainder = ""
+        streamJSONFormatter = CursorStreamJSONFormatter()
+        pendingAssistantText = ""
+        lastStreamPublishAt = nil
         currentPhase = invokePhaseLabel()
         log("[\(nodeId)] waiting for agent output…")
 

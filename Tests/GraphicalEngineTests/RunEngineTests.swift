@@ -797,6 +797,143 @@ final class RunEngineTests: XCTestCase {
         XCTAssertEqual(run.status, .failed)
     }
 
+    func testLiveLogStreamsChunksBeforeProcessExitAndKeepsTraceRedacted() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graphical-stream-live-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = try YAMLStore().createProject(at: root, name: "StreamLive", seedTemplate: true)
+        project.org = OrgGraph(
+            nodes: [
+                OrgNode(
+                    id: "worker",
+                    role: "Worker",
+                    runner: "stream_fixture",
+                    done: .allOf([.shell("true")]),
+                    maxIterations: 1
+                )
+            ],
+            edges: [],
+            entry: "worker"
+        )
+        project.runners.runners["stream_fixture"] = RunnerTemplate(
+            command: "/usr/bin/true",
+            args: [],
+            cwd: "{{project_root}}"
+        )
+        XCTAssertFalse(project.config.traceCLIOutput)
+
+        let streaming = StreamingChunkProcessRunner(
+            chunks: [
+                ProcessOutputChunk(stream: .stdout, data: Data("hel".utf8)),
+                ProcessOutputChunk(stream: .stdout, data: Data("lo-stream\n".utf8)),
+                ProcessOutputChunk(stream: .stderr, data: Data("warn-line\n".utf8))
+            ],
+            stdout: "hello-stream\n",
+            stderr: "warn-line\n"
+        )
+
+        let trace = try TraceStore(inMemory: true)
+        let engine = RunEngine(store: trace, processRunner: streaming)
+        let midInvoke = MidInvokeLogProbe()
+        streaming.midInvokeProbe = {
+            let log = await engine.liveLog
+            let finished = streaming.isFinished
+            await midInvoke.record(log: log, processFinished: finished)
+        }
+
+        let seenStreamingProgress = ProgressPhaseCollector()
+        await engine.setProgressHandler { snapshot in
+            if snapshot.liveLog.contains(where: { $0.contains("hello-stream") }) {
+                await seenStreamingProgress.append("saw-hello")
+            }
+        }
+
+        let run = try await engine.start(project: project, goal: "stream live log")
+        XCTAssertEqual(run.status, .succeeded)
+
+        let probe = await midInvoke.snapshot()
+        XCTAssertFalse(probe.processFinished, "Probe must run before process finish")
+        XCTAssertTrue(
+            probe.log.contains { $0.contains("[worker stdout] hello-stream") },
+            "Expected incomplete chunks reassembled in liveLog mid-invoke, got: \(probe.log)"
+        )
+        XCTAssertTrue(
+            probe.log.contains { $0.contains("[worker stderr] warn-line") },
+            "Expected stderr in liveLog mid-invoke, got: \(probe.log)"
+        )
+
+        let phases = await seenStreamingProgress.values
+        XCTAssertTrue(phases.contains("saw-hello"), "Expected progress publish before exit")
+
+        let log = await engine.liveLog
+        XCTAssertTrue(log.contains { $0.contains("[worker stdout] hello-stream") }, "log: \(log)")
+
+        let events = try await trace.events(runId: run.id)
+        let cliEvents = events.filter { $0.kind == .cliFinished }
+        XCTAssertFalse(cliEvents.isEmpty)
+        for event in cliEvents {
+            guard let json = event.payloadJSON,
+                  let data = json.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                XCTFail("Expected decodable payloadJSON")
+                continue
+            }
+            XCTAssertNil(object["stdout"])
+            XCTAssertNil(object["stderr"])
+            XCTAssertNil(object["stdoutPreview"])
+            XCTAssertNotNil(object["stdoutBytes"])
+        }
+    }
+
+    func testLiveLogFlushesIncompleteFinalLineAndFormatsStreamJSON() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graphical-stream-json-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = try YAMLStore().createProject(at: root, name: "StreamJSON", seedTemplate: true)
+        project.org = OrgGraph(
+            nodes: [
+                OrgNode(
+                    id: "worker",
+                    role: "Worker",
+                    runner: "stream_fixture",
+                    done: .allOf([.shell("true")]),
+                    maxIterations: 1
+                )
+            ],
+            edges: [],
+            entry: "worker"
+        )
+        project.runners.runners["stream_fixture"] = RunnerTemplate(
+            command: "/usr/bin/true",
+            args: [],
+            cwd: "{{project_root}}"
+        )
+
+        let delta = #"{"type":"assistant","timestamp_ms":1,"message":{"role":"assistant","content":[{"type":"text","text":"partial-delta"}]}}"#
+        let tool = #"{"type":"tool_call","subtype":"started","tool_call":{"writeToolCall":{"args":{"path":"out.md"}}}}"#
+        let streaming = StreamingChunkProcessRunner(
+            chunks: [
+                ProcessOutputChunk(stream: .stdout, data: Data("\(delta)\n\(tool)\nno-newline-yet".utf8))
+            ],
+            stdout: "\(delta)\n\(tool)\nno-newline-yet",
+            stderr: ""
+        )
+
+        let engine = RunEngine(store: try TraceStore(inMemory: true), processRunner: streaming)
+        let run = try await engine.start(project: project, goal: "stream json")
+        XCTAssertEqual(run.status, .succeeded)
+
+        let log = await engine.liveLog
+        XCTAssertTrue(log.contains { $0.contains("[worker stdout] partial-delta") }, "log: \(log)")
+        XCTAssertTrue(log.contains { $0.contains("[worker stdout] write out.md") }, "log: \(log)")
+        XCTAssertTrue(log.contains { $0.contains("[worker stdout] no-newline-yet") }, "log: \(log)")
+        XCTAssertFalse(log.contains { $0.contains("\"type\":\"assistant\"") }, "Raw JSON should be formatted away")
+    }
+
     /// Live Cursor play against this repo's `.graphical/` config. Opt-in:
     /// `GRAPHICAL_LIVE=1 swift test --filter testLiveCursorPlayOnProject`
     func testLiveCursorPlayOnProject() async throws {
@@ -837,6 +974,78 @@ private actor ProgressPhaseCollector {
     func append(_ phase: String?) {
         values.append(phase)
     }
+}
+
+private actor MidInvokeLogProbe {
+    private(set) var log: [String] = []
+    private(set) var processFinished = true
+
+    func record(log: [String], processFinished: Bool) {
+        self.log = log
+        self.processFinished = processFinished
+    }
+
+    func snapshot() -> (log: [String], processFinished: Bool) {
+        (log, processFinished)
+    }
+}
+
+/// Yields `ProcessOutputChunk`s mid-invoke for live-log streaming tests.
+private final class StreamingChunkProcessRunner: ProcessExecuting, @unchecked Sendable {
+    private let chunks: [ProcessOutputChunk]
+    private let stdout: String
+    private let stderr: String
+    private let lock = NSLock()
+    private var finished = false
+    var midInvokeProbe: (@Sendable () async -> Void)?
+
+    init(chunks: [ProcessOutputChunk], stdout: String, stderr: String) {
+        self.chunks = chunks
+        self.stdout = stdout
+        self.stderr = stderr
+    }
+
+    var isFinished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return finished
+    }
+
+    func run(
+        command: String,
+        arguments: [String],
+        workingDirectory: String?,
+        environment: [String: String],
+        timeoutSeconds: Int,
+        inheritEnvironment: Bool
+    ) async throws -> ProcessResult {
+        // Done-check path (`shell: true`).
+        ProcessResult(exitCode: 0, stdout: "", stderr: "")
+    }
+
+    func run(
+        command: String,
+        arguments: [String],
+        workingDirectory: String?,
+        environment: [String: String],
+        timeoutSeconds: Int,
+        inheritEnvironment: Bool,
+        onOutput: @escaping @Sendable (ProcessOutputChunk) async -> Void
+    ) async throws -> ProcessResult {
+        for chunk in chunks {
+            await onOutput(chunk)
+            await Task.yield()
+        }
+        if let midInvokeProbe {
+            await midInvokeProbe()
+        }
+        lock.lock()
+        finished = true
+        lock.unlock()
+        return ProcessResult(exitCode: 0, stdout: stdout, stderr: stderr)
+    }
+
+    func cancelCurrent() {}
 }
 
 /// Blocks in `run` until `release()` or `cancelCurrent()` so tests can cancel mid-invoke.
