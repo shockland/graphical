@@ -1,0 +1,13 @@
+name: test
+
+on: [push, pull_request]
+
+jobs:
+  swift-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set DEVELOPER_DIR
+        run: echo "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer" >> "$GITHUB_ENV"
+      - name: swift test
+        run: swift test
