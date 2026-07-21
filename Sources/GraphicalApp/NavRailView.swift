@@ -13,6 +13,7 @@ protocol NavRailViewDelegate: AnyObject {
 final class NavRailView: NSView {
     weak var delegate: NavRailViewDelegate?
 
+    private let brandIcon = NSImageView()
     private let brandLabel = AppKitText.label("Graphical", style: .title)
     private let projectLabel = AppKitText.label("No project", style: .muted)
     private let navHintLabel = AppKitText.label("Open a project to navigate", style: .caption)
@@ -49,6 +50,10 @@ final class NavRailView: NSView {
         border.wantsLayer = true
         border.layer?.backgroundColor = Theme.borderStrong.cgColor
         border.translatesAutoresizingMaskIntoConstraints = false
+
+        brandIcon.image = AppIcon.image
+        brandIcon.imageScaling = .scaleProportionallyUpOrDown
+        brandIcon.translatesAutoresizingMaskIntoConstraints = false
 
         brandLabel.translatesAutoresizingMaskIntoConstraints = false
         brandLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -90,6 +95,7 @@ final class NavRailView: NSView {
         projectHeader.addArrangedSubview(closeProjectButton)
 
         addSubview(border)
+        addSubview(brandIcon)
         addSubview(brandLabel)
         addSubview(projectHeader)
         addSubview(navHintLabel)
@@ -112,11 +118,16 @@ final class NavRailView: NSView {
             border.trailingAnchor.constraint(equalTo: trailingAnchor),
             border.widthAnchor.constraint(equalToConstant: 1),
 
-            brandLabel.topAnchor.constraint(equalTo: topAnchor, constant: 18),
-            brandLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            brandIcon.topAnchor.constraint(equalTo: topAnchor, constant: 18),
+            brandIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            brandIcon.widthAnchor.constraint(equalToConstant: 24),
+            brandIcon.heightAnchor.constraint(equalToConstant: 24),
+
+            brandLabel.centerYAnchor.constraint(equalTo: brandIcon.centerYAnchor),
+            brandLabel.leadingAnchor.constraint(equalTo: brandIcon.trailingAnchor, constant: 8),
             brandLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
 
-            projectHeader.topAnchor.constraint(equalTo: brandLabel.bottomAnchor, constant: 4),
+            projectHeader.topAnchor.constraint(equalTo: brandIcon.bottomAnchor, constant: 8),
             projectHeader.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             projectHeader.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
 
@@ -189,16 +200,16 @@ final class NavRailView: NSView {
     }
 
     private func makeRecentRunButton(_ run: RunRecord) -> NSView {
-        let shortId = String(run.id.prefix(8))
         let preview = run.goal.trimmingCharacters(in: .whitespacesAndNewlines)
-        let subtitle: String
+        let titleText: String
         if preview.isEmpty {
-            subtitle = recentDateFormatter.string(from: run.createdAt)
-        } else if preview.count > 28 {
-            subtitle = String(preview.prefix(28)) + "…"
+            titleText = "Run \(String(run.id.prefix(8)))"
+        } else if preview.count > 32 {
+            titleText = String(preview.prefix(32)) + "…"
         } else {
-            subtitle = preview
+            titleText = preview
         }
+        let subtitle = recentDateFormatter.string(from: run.createdAt)
         let statusColor = colorForRunStatus(run.status)
         let symbol = symbolForRunStatus(run.status)
 
@@ -207,9 +218,10 @@ final class NavRailView: NSView {
         icon.contentTintColor = statusColor
         icon.translatesAutoresizingMaskIntoConstraints = false
 
-        let titleLabel = AppKitText.label(shortId, style: .caption)
-        titleLabel.textColor = statusColor
-        titleLabel.font = Theme.bodyFont(ofSize: 11, weight: .semibold)
+        let titleLabel = AppKitText.label(titleText, style: .caption)
+        titleLabel.textColor = Theme.text
+        titleLabel.font = Theme.bodyFont(ofSize: 11, weight: .medium)
+        titleLabel.lineBreakMode = .byTruncatingTail
 
         let subtitleLabel = AppKitText.label(subtitle, style: .caption)
         subtitleLabel.textColor = Theme.muted

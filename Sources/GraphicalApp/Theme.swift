@@ -22,6 +22,14 @@ enum Theme {
     static let cornerRadius: CGFloat = 10
     static let controlRadius: CGFloat = 8
 
+    static let spacingXS: CGFloat = 4
+    static let spacingSM: CGFloat = 8
+    static let spacingMD: CGFloat = 12
+    static let spacingLG: CGFloat = 16
+    static let nodeShadowOpacity: CGFloat = 0.08
+    static let nodeShadowRadius: CGFloat = 6
+    static let nodeShadowOffset = CGSize(width: 0, height: 2)
+
     static let nodeSize = CGSize(width: 180, height: 72)
 
     static func bodyFont(ofSize size: CGFloat = 13, weight: NSFont.Weight = .regular) -> NSFont {

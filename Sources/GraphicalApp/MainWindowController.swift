@@ -364,6 +364,7 @@ final class MainWindowController: NSWindowController, AppModelDelegate, NSWindow
         statusBar.update(
             error: model.errorMessage,
             status: model.statusMessage,
+            workspaceHint: orgWorkspace.statusHint(for: model),
             isRunning: model.isRunning,
             hasProject: model.project != nil
         )
@@ -372,6 +373,9 @@ final class MainWindowController: NSWindowController, AppModelDelegate, NSWindow
         }
         if model.project != nil, model.selectedTab == .trace {
             traceWorkspace.reloadProgress()
+        }
+        if model.project != nil {
+            orgWorkspace.reloadRunHighlight()
         }
         updateMenuState()
     }
@@ -382,11 +386,15 @@ final class MainWindowController: NSWindowController, AppModelDelegate, NSWindow
         statusBar.update(
             error: model.errorMessage,
             status: model.statusMessage,
+            workspaceHint: orgWorkspace.statusHint(for: model),
             isRunning: model.isRunning,
             hasProject: model.project != nil
         )
         updateValidation()
         updateMenuState()
+        if model.project != nil {
+            orgWorkspace.reloadRunHighlight()
+        }
         showCurrentContent()
         scheduleSetupPresentationIfNeeded()
         scheduleCodingToolSetupPresentationIfNeeded()
@@ -582,25 +590,30 @@ extension MainWindowController: SetupAssistantControllerDelegate {
 final class ValidationBannerView: NSView {
     weak var delegate: ValidationBannerViewDelegate?
 
-    private let stack = NSStackView()
+    private let summaryButton = NSButton(title: "", target: nil, action: nil)
     private var issues: [OrgValidationIssue] = []
-    var preferredHeight: CGFloat = 0
+    var preferredHeight: CGFloat = 36
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = Theme.warningSoft.cgColor
         translatesAutoresizingMaskIntoConstraints = false
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 4
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+
+        summaryButton.bezelStyle = .inline
+        summaryButton.isBordered = false
+        summaryButton.font = Theme.bodyFont(ofSize: 12, weight: .medium)
+        summaryButton.contentTintColor = Theme.warning
+        summaryButton.alignment = .left
+        summaryButton.target = self
+        summaryButton.action = #selector(summaryTapped)
+        summaryButton.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(summaryButton)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
+            summaryButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            summaryButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            summaryButton.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
     }
 
@@ -609,27 +622,15 @@ final class ValidationBannerView: NSView {
 
     func setIssues(_ issues: [OrgValidationIssue]) {
         self.issues = issues
-        stack.arrangedSubviews.forEach {
-            stack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
-        }
-        for (index, issue) in issues.enumerated() {
-            let button = NSButton(title: "• \(issue.message)", target: self, action: #selector(issueTapped(_:)))
-            button.bezelStyle = .inline
-            button.isBordered = false
-            button.font = Theme.bodyFont(ofSize: 11)
-            button.contentTintColor = Theme.warning
-            button.alignment = .left
-            button.tag = index
-            button.translatesAutoresizingMaskIntoConstraints = false
-            stack.addArrangedSubview(button)
-        }
-        preferredHeight = max(36, CGFloat(issues.count) * 22 + 16)
+        let count = issues.count
+        let noun = count == 1 ? "issue" : "issues"
+        summaryButton.title = "\(count) workflow \(noun) — click to review"
+        preferredHeight = 36
     }
 
-    @objc private func issueTapped(_ sender: NSButton) {
-        guard sender.tag >= 0, sender.tag < issues.count else { return }
-        delegate?.validationBanner(self, didSelect: issues[sender.tag])
+    @objc private func summaryTapped() {
+        guard let first = issues.first else { return }
+        delegate?.validationBanner(self, didSelect: first)
     }
 }
 

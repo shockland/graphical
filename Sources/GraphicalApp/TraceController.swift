@@ -10,7 +10,19 @@ final class TraceController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     private let detail = NSTextView()
     private let header = AppKitText.label("History", style: .title)
     private let meta = AppKitText.label("", style: .muted)
+    private let listEmpty = TabEmptyStateView(
+        icon: "clock.arrow.circlepath",
+        title: "No activity yet",
+        detail: "Open Run and choose Play to record workflow activity here."
+    )
+    private let detailEmpty = TabEmptyStateView(
+        icon: "doc.text.magnifyingglass",
+        title: "Select an event",
+        detail: "Pick an activity row to inspect its details."
+    )
     private var events: [TraceEvent] = []
+    private var listEmptyHeight: NSLayoutConstraint?
+    private var detailEmptyHeight: NSLayoutConstraint?
 
     override init() {
         super.init()
@@ -35,11 +47,8 @@ final class TraceController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         table.backgroundColor = Theme.surface
         table.selectionHighlightStyle = .regular
 
-        let listScroll = NSScrollView()
-        listScroll.translatesAutoresizingMaskIntoConstraints = false
+        let listScroll = ThemedScrollView()
         listScroll.documentView = table
-        listScroll.hasVerticalScroller = true
-        listScroll.borderType = .bezelBorder
 
         detail.isEditable = false
         detail.isRichText = false
@@ -49,22 +58,26 @@ final class TraceController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         detail.textContainerInset = NSSize(width: 12, height: 12)
         AppKitText.configureWrappingTextView(detail)
 
-        let detailScroll = NSScrollView()
-        detailScroll.translatesAutoresizingMaskIntoConstraints = false
+        let detailScroll = ThemedScrollView()
         detailScroll.documentView = detail
-        detailScroll.hasVerticalScroller = true
-        detailScroll.hasHorizontalScroller = false
-        detailScroll.borderType = .bezelBorder
+
+        listEmpty.isHidden = true
+        detailEmpty.isHidden = true
 
         view.addSubview(top)
         view.addSubview(listScroll)
+        view.addSubview(listEmpty)
         view.addSubview(detailScroll)
+        view.addSubview(detailEmpty)
 
         let listWidth = listScroll.widthAnchor.constraint(equalToConstant: 240)
         listWidth.priority = .defaultHigh
         let listMinWidth = listScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 160)
         listMinWidth.priority = .defaultLow
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        listEmptyHeight = listEmpty.heightAnchor.constraint(equalTo: listScroll.heightAnchor)
+        detailEmptyHeight = detailEmpty.heightAnchor.constraint(equalTo: detailScroll.heightAnchor)
 
         NSLayoutConstraint.activate([
             top.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
@@ -78,23 +91,42 @@ final class TraceController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             listMinWidth,
             listScroll.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.4),
 
+            listEmpty.leadingAnchor.constraint(equalTo: listScroll.leadingAnchor),
+            listEmpty.trailingAnchor.constraint(equalTo: listScroll.trailingAnchor),
+            listEmpty.topAnchor.constraint(equalTo: listScroll.topAnchor),
+
             detailScroll.leadingAnchor.constraint(equalTo: listScroll.trailingAnchor, constant: 12),
             detailScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             detailScroll.topAnchor.constraint(equalTo: listScroll.topAnchor),
-            detailScroll.bottomAnchor.constraint(equalTo: listScroll.bottomAnchor)
+            detailScroll.bottomAnchor.constraint(equalTo: listScroll.bottomAnchor),
+
+            detailEmpty.leadingAnchor.constraint(equalTo: detailScroll.leadingAnchor),
+            detailEmpty.trailingAnchor.constraint(equalTo: detailScroll.trailingAnchor),
+            detailEmpty.topAnchor.constraint(equalTo: detailScroll.topAnchor),
+
+            listEmptyHeight!,
+            detailEmptyHeight!
         ])
+    }
+
+    private func updateEmptyStates() {
+        let listIsEmpty = events.isEmpty
+        listEmpty.isHidden = !listIsEmpty
+        if listIsEmpty {
+            detailEmpty.isHidden = false
+            detail.string = ""
+            return
+        }
+        let hasSelection = table.selectedRow >= 0 && table.selectedRow < events.count
+        detailEmpty.isHidden = hasSelection
     }
 
     func reload() {
         events = model.events
         updateMeta()
         table.reloadData()
-        if events.isEmpty {
-            detail.string = model.run == nil
-                ? "Open Run and choose Play to record activity."
-                : "This run has no recorded activity yet."
-            return
-        }
+        updateEmptyStates()
+        if events.isEmpty { return }
         if table.selectedRow < 0 {
             table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
             showDetail(events[0])
@@ -111,11 +143,9 @@ final class TraceController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         if events.count != previousCount {
             table.reloadData()
         }
-        if events.isEmpty {
-            detail.string = model.run == nil
-                ? "Open Run and choose Play to record activity."
-                : "This run has no recorded activity yet."
-        } else if table.selectedRow >= 0, table.selectedRow < events.count {
+        updateEmptyStates()
+        if events.isEmpty { return }
+        if table.selectedRow >= 0, table.selectedRow < events.count {
             showDetail(events[table.selectedRow])
         }
     }
@@ -129,6 +159,10 @@ final class TraceController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { events.count }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        ThemedTableRowView()
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let event = events[row]
@@ -170,7 +204,11 @@ final class TraceController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
-        guard row >= 0, row < events.count else { return }
+        guard row >= 0, row < events.count else {
+            updateEmptyStates()
+            return
+        }
+        detailEmpty.isHidden = true
         showDetail(events[row])
     }
 

@@ -90,6 +90,90 @@ final class PrimaryButton: NSButton {
     }
 }
 
+/// Flat scroll host: `Theme.surface` fill, 1px separator — no bezel border.
+class ThemedScrollView: NSScrollView {
+    private let topBorder = NSBox()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+        borderType = .noBorder
+        hasVerticalScroller = true
+        hasHorizontalScroller = false
+        autohidesScrollers = true
+        drawsBackground = true
+        backgroundColor = Theme.surface
+
+        topBorder.boxType = .separator
+        topBorder.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(topBorder)
+        NSLayoutConstraint.activate([
+            topBorder.leadingAnchor.constraint(equalTo: leadingAnchor),
+            topBorder.trailingAnchor.constraint(equalTo: trailingAnchor),
+            topBorder.topAnchor.constraint(equalTo: topAnchor)
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+}
+
+enum ConfirmDialog {
+    @MainActor
+    static func confirmDelete(title: String, message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+}
+
+/// Muted idle placeholder matching the empty-project screen tone.
+final class TabEmptyStateView: NSView {
+    init(icon: String, title: String, detail: String) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        let iconView = NSImageView()
+        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
+        iconView.contentTintColor = Theme.muted.withAlphaComponent(0.55)
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = AppKitText.label(title, style: .section)
+        titleLabel.textColor = Theme.muted
+        titleLabel.alignment = .center
+
+        let detailLabel = AppKitText.label(detail, style: .caption)
+        detailLabel.textColor = Theme.muted.withAlphaComponent(0.85)
+        detailLabel.alignment = .center
+        detailLabel.maximumNumberOfLines = 4
+        detailLabel.lineBreakMode = .byWordWrapping
+
+        let stack = NSStackView(views: [iconView, titleLabel, detailLabel])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = Theme.spacingSM
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: Theme.spacingLG),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -Theme.spacingLG),
+            iconView.widthAnchor.constraint(equalToConstant: 28),
+            iconView.heightAnchor.constraint(equalToConstant: 28),
+            detailLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 320)
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+}
+
 final class StatusBarView: NSView {
     private let label = NSTextField(labelWithString: "Ready")
     private let spinner = NSProgressIndicator()
@@ -135,12 +219,24 @@ final class StatusBarView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(error: String?, status: String?, isRunning: Bool, hasProject: Bool) {
+    func update(
+        error: String?,
+        status: String?,
+        workspaceHint: String? = nil,
+        isRunning: Bool,
+        hasProject: Bool
+    ) {
         if let error {
             label.stringValue = error
             label.textColor = Theme.danger
+        } else if isRunning, let status {
+            label.stringValue = status
+            label.textColor = Theme.accent
         } else if let status {
             label.stringValue = status
+            label.textColor = Theme.muted
+        } else if let workspaceHint {
+            label.stringValue = workspaceHint
             label.textColor = Theme.muted
         } else {
             label.stringValue = hasProject ? "Project loaded" : "Ready"
@@ -148,17 +244,16 @@ final class StatusBarView: NSView {
         }
         if isRunning {
             spinner.startAnimation(nil)
-            label.textColor = Theme.accent
+            if error == nil {
+                label.textColor = Theme.accent
+            }
         } else {
             spinner.stopAnimation(nil)
-            if error == nil {
-                label.textColor = Theme.muted
-            }
         }
     }
 }
 
-final class MonoLogView: NSScrollView {
+final class MonoLogView: ThemedScrollView {
     private let textView = NSTextView()
     private let jumpButton = NSButton(title: "", target: nil, action: nil)
     /// Count of lines already rendered, so `appendLines` can add only the new
@@ -170,13 +265,6 @@ final class MonoLogView: NSScrollView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        translatesAutoresizingMaskIntoConstraints = false
-        borderType = .bezelBorder
-        hasVerticalScroller = true
-        hasHorizontalScroller = false
-        autohidesScrollers = true
-        drawsBackground = true
-        backgroundColor = Theme.surface
 
         textView.isEditable = false
         textView.isSelectable = true
@@ -271,10 +359,22 @@ final class MonoLogView: NSScrollView {
 final class FormField: NSView {
     let label: NSTextField
     let control: NSView
+    private let helpLabel: NSTextField?
 
-    init(title: String, control: NSView) {
+    init(title: String, help: String? = nil, control: NSView) {
         self.label = NSTextField(labelWithString: title)
         self.control = control
+        if let help {
+            let field = NSTextField(wrappingLabelWithString: help)
+            Theme.applyLabel(field, style: .caption)
+            field.textColor = Theme.muted.withAlphaComponent(0.9)
+            field.maximumNumberOfLines = 0
+            field.lineBreakMode = .byWordWrapping
+            field.translatesAutoresizingMaskIntoConstraints = false
+            self.helpLabel = field
+        } else {
+            self.helpLabel = nil
+        }
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -285,20 +385,47 @@ final class FormField: NSView {
         control.translatesAutoresizingMaskIntoConstraints = false
         control.setContentHuggingPriority(.defaultLow, for: .horizontal)
         addSubview(label)
+        if let helpLabel {
+            addSubview(helpLabel)
+        }
         addSubview(control)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor),
-            label.topAnchor.constraint(equalTo: topAnchor),
-            control.leadingAnchor.constraint(equalTo: leadingAnchor),
-            control.trailingAnchor.constraint(equalTo: trailingAnchor),
-            control.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 4),
-            control.bottomAnchor.constraint(equalTo: bottomAnchor)
-        ])
+        if let helpLabel {
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: leadingAnchor),
+                label.trailingAnchor.constraint(equalTo: trailingAnchor),
+                label.topAnchor.constraint(equalTo: topAnchor),
+                helpLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
+                helpLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+                helpLabel.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 2),
+                control.leadingAnchor.constraint(equalTo: leadingAnchor),
+                control.trailingAnchor.constraint(equalTo: trailingAnchor),
+                control.topAnchor.constraint(equalTo: helpLabel.bottomAnchor, constant: 4),
+                control.bottomAnchor.constraint(equalTo: bottomAnchor)
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: leadingAnchor),
+                label.trailingAnchor.constraint(equalTo: trailingAnchor),
+                label.topAnchor.constraint(equalTo: topAnchor),
+                control.leadingAnchor.constraint(equalTo: leadingAnchor),
+                control.trailingAnchor.constraint(equalTo: trailingAnchor),
+                control.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 4),
+                control.bottomAnchor.constraint(equalTo: bottomAnchor)
+            ])
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+}
+
+/// Table row with soft accent selection instead of system blue.
+final class ThemedTableRowView: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard isSelected else { return }
+        Theme.accentSoft.setFill()
+        dirtyRect.fill()
+    }
 }
 
 enum AppKitText {

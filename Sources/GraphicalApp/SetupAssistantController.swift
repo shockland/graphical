@@ -226,11 +226,8 @@ final class SetupAssistantController: NSWindowController, NSTextViewDelegate {
         )
         detail.maximumNumberOfLines = 2
 
-        let scroll = NSScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let scroll = ThemedScrollView()
         scroll.documentView = goalTextView
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
 
         let examples = AppKitText.label(

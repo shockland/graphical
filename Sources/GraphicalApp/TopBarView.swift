@@ -87,7 +87,9 @@ final class TopBarView: NSView {
         pathLabel.stringValue = model.project?.root.path ?? ""
         let hasProject = model.project != nil
         let running = model.isRunning
-        closeButton.isHidden = !hasProject
+        openButton.isHidden = hasProject
+        createButton.isHidden = hasProject
+        closeButton.isHidden = true
         saveButton.isEnabled = hasProject
         saveButton.isHidden = !hasProject
         unsavedLabel.isHidden = !hasProject || !model.hasUnsavedChanges

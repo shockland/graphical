@@ -25,6 +25,7 @@ final class OrgCanvasView: NSView {
     private(set) var selectedNodeId: String?
     private(set) var selectedEdgeId: String?
     private(set) var activeRunNodeId: String?
+    private var runPaused = false
     var tool: OrgCanvasTool = .select
     private var connectFromId: String?
 
@@ -59,22 +60,30 @@ final class OrgCanvasView: NSView {
         layout: CanvasLayout,
         selectedNodeId: String?,
         selectedEdgeId: String?,
-        activeRunNodeId: String? = nil
+        activeRunNodeId: String? = nil,
+        runPaused: Bool = false
     ) {
         self.org = org
         self.layout = layout
         self.selectedNodeId = selectedNodeId
         self.selectedEdgeId = selectedEdgeId
-        self.activeRunNodeId = activeRunNodeId
+        setActiveRunHighlight(nodeId: activeRunNodeId, paused: runPaused)
         needsDisplay = true
         if selectedNodeId != nil || selectedEdgeId != nil {
             startSelectionPulse()
         }
-        if activeRunNodeId != nil {
+    }
+
+    func setActiveRunHighlight(nodeId: String?, paused: Bool) {
+        guard activeRunNodeId != nodeId || runPaused != paused else { return }
+        activeRunNodeId = nodeId
+        runPaused = paused
+        if nodeId != nil {
             startRunPulse()
         } else {
             stopRunPulse()
         }
+        needsDisplay = true
     }
 
     func setTool(_ tool: OrgCanvasTool) {
@@ -186,22 +195,23 @@ final class OrgCanvasView: NSView {
 
     private func drawGrid() {
         let step: CGFloat = 24
-        Theme.border.withAlphaComponent(0.55).setStroke()
-        let path = NSBezierPath()
-        path.lineWidth = 1
-        var x: CGFloat = 0
+        let dotRadius: CGFloat = 0.75
+        Theme.border.withAlphaComponent(0.65).setFill()
+        var x: CGFloat = step / 2
         while x < bounds.width {
-            path.move(to: CGPoint(x: x, y: 0))
-            path.line(to: CGPoint(x: x, y: bounds.height))
+            var y: CGFloat = step / 2
+            while y < bounds.height {
+                let dot = NSBezierPath(ovalIn: NSRect(
+                    x: x - dotRadius,
+                    y: y - dotRadius,
+                    width: dotRadius * 2,
+                    height: dotRadius * 2
+                ))
+                dot.fill()
+                y += step
+            }
             x += step
         }
-        var y: CGFloat = 0
-        while y < bounds.height {
-            path.move(to: CGPoint(x: 0, y: y))
-            path.line(to: CGPoint(x: bounds.width, y: y))
-            y += step
-        }
-        path.stroke()
     }
 
     private func drawNode(_ node: OrgNode) {
@@ -212,12 +222,22 @@ final class OrgCanvasView: NSView {
         let isActiveRun = activeRunNodeId == node.id
 
         let path = NSBezierPath(roundedRect: rect, xRadius: Theme.cornerRadius, yRadius: Theme.cornerRadius)
+
+        NSGraphicsContext.current?.saveGraphicsState()
+        if let ctx = NSGraphicsContext.current?.cgContext {
+            ctx.setShadow(
+                offset: Theme.nodeShadowOffset,
+                blur: Theme.nodeShadowRadius,
+                color: NSColor.black.withAlphaComponent(Theme.nodeShadowOpacity).cgColor
+            )
+        }
         if isActiveRun {
             Theme.accentSoft.withAlphaComponent(0.45 + 0.35 * runPulse).setFill()
         } else {
             Theme.surface.setFill()
         }
         path.fill()
+        NSGraphicsContext.current?.restoreGraphicsState()
 
         if isActiveRun {
             Theme.accent.withAlphaComponent(0.55 + 0.35 * runPulse).setStroke()
@@ -231,22 +251,20 @@ final class OrgCanvasView: NSView {
         }
         path.stroke()
 
-        if isActiveRun {
-            let badge = "▶" as NSString
-            badge.draw(
-                in: NSRect(x: rect.maxX - 22, y: rect.minY + 34, width: 14, height: 14),
+        if isEntry {
+            let bar = NSRect(x: rect.minX, y: rect.minY + 8, width: 5, height: rect.height - 16)
+            let barPath = NSBezierPath(roundedRect: bar, xRadius: 2.5, yRadius: 2.5)
+            Theme.accent.setFill()
+            barPath.fill()
+
+            let flag = "START" as NSString
+            flag.draw(
+                in: NSRect(x: rect.minX + 12, y: rect.minY + 4, width: 40, height: 10),
                 withAttributes: [
-                    .font: Theme.bodyFont(ofSize: 10, weight: .bold),
+                    .font: Theme.bodyFont(ofSize: 8, weight: .bold),
                     .foregroundColor: Theme.accent
                 ]
             )
-        }
-
-        if isEntry {
-            let bar = NSRect(x: rect.minX, y: rect.minY + 10, width: 4, height: rect.height - 20)
-            let barPath = NSBezierPath(roundedRect: bar, xRadius: 2, yRadius: 2)
-            Theme.accent.setFill()
-            barPath.fill()
         }
 
         let role = node.role as NSString
@@ -285,6 +303,39 @@ final class OrgCanvasView: NSView {
                 .foregroundColor: Theme.accent
             ]
         )
+
+        if isActiveRun {
+            let label = runPaused ? "Paused" : "Working"
+            let font = Theme.bodyFont(ofSize: 9, weight: .semibold)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: Theme.accent
+            ]
+            let text = label as NSString
+            let textSize = text.size(withAttributes: attrs)
+            let padH: CGFloat = 5
+            let padV: CGFloat = 2
+            let badgeW = textSize.width + padH * 2
+            let badgeH = textSize.height + padV * 2
+            let badgeRect = NSRect(
+                x: rect.maxX - badgeW - 8,
+                y: rect.minY + 8,
+                width: badgeW,
+                height: badgeH
+            )
+            let badgePath = NSBezierPath(roundedRect: badgeRect, xRadius: 4, yRadius: 4)
+            Theme.accentSoft.setFill()
+            badgePath.fill()
+            text.draw(
+                in: NSRect(
+                    x: badgeRect.minX + padH,
+                    y: badgeRect.minY + padV,
+                    width: textSize.width,
+                    height: textSize.height
+                ),
+                withAttributes: attrs
+            )
+        }
     }
 
     private func drawEdge(_ edge: OrgEdge) {

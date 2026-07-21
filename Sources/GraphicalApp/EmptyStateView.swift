@@ -39,7 +39,11 @@ final class EmptyStateView: NSView {
         actions.spacing = 10
         actions.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [iconView, brand, subtitle, actions])
+        let hints = AppKitText.label("⌘O Open · ⌘N Create · ⌘S Save · ⌘R Run", style: .caption)
+        hints.textColor = Theme.muted.withAlphaComponent(0.85)
+        hints.alignment = .center
+
+        let stack = NSStackView(views: [iconView, brand, subtitle, actions, hints])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 14

@@ -1,8 +1,6 @@
 name: Graphical
-goal: |
-  Improve the Graphical macOS app (Sources/GraphicalApp and related modules).
-  Agents should make real source changes, not just write markdown in artifacts.
-  Keep changes focused and minimal; swift build must pass before each handoff completes.
+goal: ''
 goalFile: GOAL.md
 defaultMaxIterations: 3
 defaultTimeoutSeconds: 600
+traceCLIOutput: false

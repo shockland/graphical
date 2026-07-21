@@ -22,6 +22,11 @@ final class RunConsoleController: NSObject {
     private let approveButton: PrimaryButton
     private let rejectButton: PrimaryButton
     private let handoffStack = NSStackView()
+    private let handoffEmpty = TabEmptyStateView(
+        icon: "arrow.right.doc.on.clipboard",
+        title: "No handoff yet",
+        detail: "Choose Play to see what each step passes to the next — summaries, artifacts, and checks."
+    )
     private let headerStack = NSStackView()
     private let subtitleLabel = AppKitText.label(
         "Runs Planner → Implementer → Reviewer from the entry step using each node’s coding tool.",
@@ -153,19 +158,16 @@ final class RunConsoleController: NSObject {
         handoffStack.alignment = .leading
         handoffStack.spacing = 10
         handoffStack.translatesAutoresizingMaskIntoConstraints = false
-        let rightStack = NSStackView(views: [handoffTitle, handoffStack])
+        handoffEmpty.isHidden = true
+        let rightStack = NSStackView(views: [handoffTitle, handoffEmpty, handoffStack])
         rightStack.orientation = .vertical
         rightStack.alignment = .leading
         rightStack.spacing = 12
         rightStack.translatesAutoresizingMaskIntoConstraints = false
         rightStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
 
-        let handoffScroll = NSScrollView()
-        handoffScroll.translatesAutoresizingMaskIntoConstraints = false
-        handoffScroll.hasVerticalScroller = true
-        handoffScroll.hasHorizontalScroller = false
+        let handoffScroll = ThemedScrollView()
         handoffScroll.drawsBackground = false
-        handoffScroll.borderType = .noBorder
         handoffScroll.documentView = rightStack
         right.addSubview(handoffScroll)
 
@@ -235,7 +237,8 @@ final class RunConsoleController: NSObject {
             runInfo.widthAnchor.constraint(equalTo: headerStack.widthAnchor),
             activityRow.widthAnchor.constraint(equalTo: logHeaderStack.widthAnchor),
             approvalWidth,
-            handoffStack.widthAnchor.constraint(equalTo: rightStack.widthAnchor, constant: -32)
+            handoffStack.widthAnchor.constraint(equalTo: rightStack.widthAnchor, constant: -32),
+            handoffEmpty.widthAnchor.constraint(equalTo: rightStack.widthAnchor, constant: -32)
         ])
     }
 
@@ -447,12 +450,10 @@ final class RunConsoleController: NSObject {
             $0.removeFromSuperview()
         }
         guard let inspection else {
-            addHandoffRow(wrappingHandoffLabel(
-                "Choose Play to see what Planner passes to Implementer, then onward to Reviewer.",
-                style: .muted
-            ))
+            handoffEmpty.isHidden = false
             return
         }
+        handoffEmpty.isHidden = true
         if showHistoryCoachForCurrentHandoff {
             addHandoffRow(makeHistoryCoachRow())
         }
@@ -466,7 +467,7 @@ final class RunConsoleController: NSObject {
         addHandoffRow(wrappingHandoffLabel("Included", style: .section))
         addHandoffRow(kv("Summary", inspection.passed.summary))
         for path in inspection.passed.artifacts {
-            addHandoffRow(wrappingHandoffLabel(path, style: .mono, charWrap: true))
+            addHandoffRow(artifactPathRow(path))
         }
         for check in inspection.passed.checks {
             addHandoffRow(
@@ -481,6 +482,27 @@ final class RunConsoleController: NSObject {
                 addHandoffRow(wrappingHandoffLabel(field.rawValue, style: .caption))
             }
         }
+    }
+
+    private func artifactPathRow(_ path: String) -> NSView {
+        let truncated = truncatePath(path, maxLength: 52)
+        let label = AppKitText.label(truncated, style: .mono)
+        label.lineBreakMode = .byTruncatingMiddle
+        label.toolTip = path
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let row = NSStackView(views: [label])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.translatesAutoresizingMaskIntoConstraints = false
+        label.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
+        return row
+    }
+
+    private func truncatePath(_ path: String, maxLength: Int) -> String {
+        guard path.count > maxLength else { return path }
+        let head = maxLength / 2 - 1
+        let tail = maxLength - head - 1
+        return String(path.prefix(head)) + "…" + String(path.suffix(tail))
     }
 
     private func wrappingHandoffLabel(
@@ -562,12 +584,8 @@ final class RunConsoleController: NSObject {
         }
     }
 
-    private func wrap(_ textView: NSTextView, height: CGFloat) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.borderType = .bezelBorder
-        scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = false
+    private func wrap(_ textView: NSTextView, height: CGFloat) -> ThemedScrollView {
+        let scroll = ThemedScrollView()
         scroll.documentView = textView
         let preferred = scroll.heightAnchor.constraint(equalToConstant: height)
         preferred.priority = .defaultHigh

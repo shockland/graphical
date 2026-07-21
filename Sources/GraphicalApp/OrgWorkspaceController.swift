@@ -9,10 +9,12 @@ final class OrgWorkspaceController: NSObject {
     private let inspector = OrgInspectorView()
     private let projectGuide = ProjectGuideView()
     private let toolbar = NSStackView()
+    private let selectButton: PrimaryButton
     private let fixedButton: PrimaryButton
     private let routerButton: PrimaryButton
 
     override init() {
+        selectButton = PrimaryButton(title: "Select", style: .secondary, target: nil, action: nil)
         fixedButton = PrimaryButton(title: "Connect Steps", style: .secondary, target: nil, action: nil)
         routerButton = PrimaryButton(title: "Add Decision", style: .secondary, target: nil, action: nil)
         super.init()
@@ -35,6 +37,8 @@ final class OrgWorkspaceController: NSObject {
         run.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Play")
         run.imagePosition = .imageLeading
         let addNode = PrimaryButton(title: "Add Step", style: .secondary, target: self, action: #selector(addNode))
+        selectButton.target = self
+        selectButton.action = #selector(selectTool)
         fixedButton.target = self
         fixedButton.action = #selector(connectFixed)
         routerButton.target = self
@@ -48,10 +52,11 @@ final class OrgWorkspaceController: NSObject {
         hint.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        for control in [addNode, fixedButton, routerButton, fit, run] as [NSView] {
+        for control in [addNode, selectButton, fixedButton, routerButton, fit, run] as [NSView] {
             control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         }
         toolbar.addArrangedSubview(addNode)
+        toolbar.addArrangedSubview(selectButton)
         toolbar.addArrangedSubview(fixedButton)
         toolbar.addArrangedSubview(routerButton)
         toolbar.addArrangedSubview(fit)
@@ -125,6 +130,18 @@ final class OrgWorkspaceController: NSObject {
         ])
     }
 
+    func statusHint(for model: AppModel) -> String? {
+        guard model.selectedTab == .org else { return nil }
+        switch canvas.tool {
+        case .select:
+            return nil
+        case .connectFixed:
+            return "Connect Steps armed — click a step, then click the next step"
+        case .connectRouter:
+            return "Add Decision armed — click source step, then each possible target"
+        }
+    }
+
     func reload() {
         guard let project = model.project else { return }
         if let readiness = model.projectReadiness {
@@ -135,7 +152,8 @@ final class OrgWorkspaceController: NSObject {
             layout: model.layout,
             selectedNodeId: model.selectedNodeId,
             selectedEdgeId: model.selectedEdgeId,
-            activeRunNodeId: model.isRunning ? model.run?.activeNodeId : nil
+            activeRunNodeId: resolvedActiveRunNodeId(from: model),
+            runPaused: model.run?.status == .awaitingApproval
         )
         syncToolButtons()
         if model.consumeFitCanvasRequest() {
@@ -154,6 +172,19 @@ final class OrgWorkspaceController: NSObject {
         )
     }
 
+    func reloadRunHighlight() {
+        guard model.project != nil else { return }
+        canvas.setActiveRunHighlight(
+            nodeId: resolvedActiveRunNodeId(from: model),
+            paused: model.run?.status == .awaitingApproval
+        )
+    }
+
+    private func resolvedActiveRunNodeId(from model: AppModel) -> String? {
+        guard model.isRunning || model.run?.status == .awaitingApproval else { return nil }
+        return model.run?.activeNodeId
+    }
+
     private func centerSelection(in org: OrgGraph) {
         if let nodeId = model.selectedNodeId {
             canvas.centerOn(nodeId: nodeId)
@@ -164,18 +195,28 @@ final class OrgWorkspaceController: NSObject {
     }
 
     private func syncToolButtons() {
+        selectButton.isActive = canvas.tool == .select
         fixedButton.isActive = canvas.tool == .connectFixed
         routerButton.isActive = canvas.tool == .connectRouter
     }
 
+    private func toolDidChange() {
+        syncToolButtons()
+        model.notify()
+    }
+
     @objc private func addNode() { model.addNode() }
+    @objc private func selectTool() {
+        canvas.setTool(.select)
+        toolDidChange()
+    }
     @objc private func connectFixed() {
         canvas.setTool(canvas.tool == .connectFixed ? .select : .connectFixed)
-        syncToolButtons()
+        toolDidChange()
     }
     @objc private func connectRouter() {
         canvas.setTool(canvas.tool == .connectRouter ? .select : .connectRouter)
-        syncToolButtons()
+        toolDidChange()
     }
     @objc private func fitCanvas() { model.requestFitCanvas() }
     @objc private func runGraph() {
@@ -205,7 +246,7 @@ extension OrgWorkspaceController: OrgCanvasViewDelegate {
             model.addFixedEdge(from: from, to: to)
         }
         canvas.setTool(.select)
-        syncToolButtons()
+        toolDidChange()
     }
 
     func orgCanvasDidRequestDeleteSelection(_ canvas: OrgCanvasView) {
@@ -213,8 +254,7 @@ extension OrgWorkspaceController: OrgCanvasViewDelegate {
     }
 
     func orgCanvasDidRequestCancelConnect(_ canvas: OrgCanvasView) {
-        syncToolButtons()
-        model.notify()
+        toolDidChange()
     }
 }
 

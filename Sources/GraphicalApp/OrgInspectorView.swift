@@ -16,7 +16,7 @@ protocol OrgInspectorViewDelegate: AnyObject {
 final class OrgInspectorView: NSView {
     weak var delegate: OrgInspectorViewDelegate?
 
-    private let scroll = NSScrollView()
+    private let scroll = ThemedScrollView()
     private let stack = NSStackView()
     private var nodeIds: [String] = []
     private var currentNode: OrgNode?
@@ -66,9 +66,7 @@ final class OrgInspectorView: NSView {
         stack.edgeInsets = NSEdgeInsets(top: 16, left: 14, bottom: 16, right: 14)
 
         scroll.documentView = stack
-        scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
-        scroll.borderType = .noBorder
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
         configureTextView(goalView)
@@ -147,7 +145,11 @@ final class OrgInspectorView: NSView {
             addStacked(FormField(title: "Required output files (comma-separated)", control: artifactsField))
             routerNextButton.target = self
             routerNextButton.action = #selector(applyNode)
-            addStacked(routerNextButton)
+            addStacked(FormField(
+                title: "Require decision output (next.json)",
+                help: "When enabled, this step must produce next.json so decision connections can route to the next step.",
+                control: routerNextButton
+            ))
             shellChecksLabel.lineBreakMode = .byWordWrapping
             shellChecksLabel.maximumNumberOfLines = 0
             shellChecksLabel.isHidden = shellChecksLabel.stringValue.isEmpty
@@ -163,9 +165,21 @@ final class OrgInspectorView: NSView {
             addStacked(AppKitText.label("Connection", style: .section))
             fillEdgeFields(edge)
             addStacked(FormField(title: "From step", control: fromPopup))
-            addStacked(FormField(title: "Connection type", control: typePopup))
-            addStacked(FormField(title: "Next step", control: toPopup))
-            addStacked(FormField(title: "Possible next steps (comma-separated)", control: targetsField))
+            addStacked(FormField(
+                title: "Connection type",
+                help: "Next step links one target. Decision branches to several targets using next.json from the source step.",
+                control: typePopup
+            ))
+            addStacked(FormField(
+                title: "Next step",
+                help: "The single step this connection leads to when the source succeeds.",
+                control: toPopup
+            ))
+            addStacked(FormField(
+                title: "Possible next steps (comma-separated)",
+                help: "Decision edges list every valid target. The source agent writes next.json to pick one.",
+                control: targetsField
+            ))
             addStacked(FormField(title: "Continue when", control: onPopup))
             approvalButton.target = self
             approvalButton.action = #selector(applyEdge)
@@ -382,6 +396,11 @@ final class OrgInspectorView: NSView {
 
     @objc private func deleteNode() {
         guard let id = currentNode?.id else { return }
+        let role = roleField.stringValue.isEmpty ? id : roleField.stringValue
+        guard ConfirmDialog.confirmDelete(
+            title: "Delete step?",
+            message: "Remove “\(role)” from the workflow? Connected edges will also be removed."
+        ) else { return }
         delegate?.orgInspector(self, didDeleteNode: id)
     }
 
@@ -411,6 +430,10 @@ final class OrgInspectorView: NSView {
 
     @objc private func deleteEdge() {
         guard let id = currentEdge?.id else { return }
+        guard ConfirmDialog.confirmDelete(
+            title: "Delete connection?",
+            message: "Remove this connection from the workflow?"
+        ) else { return }
         delegate?.orgInspector(self, didDeleteEdge: id)
     }
 
@@ -430,11 +453,8 @@ final class OrgInspectorView: NSView {
         return row
     }
 
-    private func wrapTextView(_ textView: NSTextView, height: CGFloat) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
+    private func wrapTextView(_ textView: NSTextView, height: CGFloat) -> ThemedScrollView {
+        let scroll = ThemedScrollView()
         scroll.drawsBackground = true
         scroll.backgroundColor = Theme.background
         scroll.documentView = textView

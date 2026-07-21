@@ -20,6 +20,18 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     private let kindPopup = AppKitText.popup()
     private let defaultModelPopup = AppKitText.popup()
     private let newNameField = AppKitText.field()
+    private let listEmpty = TabEmptyStateView(
+        icon: "person.crop.circle.badge.plus",
+        title: "No agents yet",
+        detail: "Add a coding-tool agent below, or use Set up coding tool to apply a preset."
+    )
+    private let editorEmpty = TabEmptyStateView(
+        icon: "person.crop.circle",
+        title: "Select an agent",
+        detail: "Choose an agent from the list to edit its command, args, and default model."
+    )
+    private var editorFormViews: [NSView] = []
+    private var editorAddSectionViews: [NSView] = []
 
     override init() {
         super.init()
@@ -55,23 +67,20 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         table.rowHeight = 28
         table.backgroundColor = Theme.surface
 
-        let listScroll = NSScrollView()
-        listScroll.translatesAutoresizingMaskIntoConstraints = false
+        let listScroll = ThemedScrollView()
         listScroll.documentView = table
-        listScroll.hasVerticalScroller = true
-        listScroll.borderType = .bezelBorder
-        let listWidth = listScroll.widthAnchor.constraint(equalToConstant: 180)
-        listWidth.priority = .defaultHigh
-        listWidth.isActive = true
         listScroll.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let listPane = NSView()
+        listPane.translatesAutoresizingMaskIntoConstraints = false
+        listPane.addSubview(listScroll)
+        listPane.addSubview(listEmpty)
+        listEmpty.isHidden = true
 
         argsView.isRichText = false
         argsView.font = Theme.monoFont(ofSize: 12)
-        let argsScroll = NSScrollView()
-        argsScroll.translatesAutoresizingMaskIntoConstraints = false
+        let argsScroll = ThemedScrollView()
         argsScroll.documentView = argsView
-        argsScroll.hasVerticalScroller = true
-        argsScroll.borderType = .bezelBorder
         argsScroll.heightAnchor.constraint(equalToConstant: 120).isActive = true
 
         kindPopup.removeAllItems()
@@ -86,31 +95,35 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         let del = PrimaryButton(title: "Delete", style: .danger, target: self, action: #selector(deleteRunner))
         let add = PrimaryButton(title: "Add", style: .secondary, target: self, action: #selector(addRunner))
 
-        let editor = NSStackView(views: [
-            nameLabel,
+        let applyRow = NSStackView(views: [apply, del])
+        let addRow = NSStackView(views: [newNameField, add])
+        let placeholders = AppKitText.label(
+            "Placeholders: {{project_root}} {{prompt_file}} {{node_artifacts}} {{run_id}} {{node_id}} {{model}}",
+            style: .caption
+        )
+        editorFormViews = [
             FormField(title: "Command", control: commandField),
             FormField(title: "Args (one per line; YAML list if multiline)", control: argsScroll),
             FormField(title: "cwd", control: cwdField),
             FormField(title: "Kind", control: kindPopup),
             FormField(title: "Default model", control: defaultModelPopup),
-            AppKitText.label(
-                "Placeholders: {{project_root}} {{prompt_file}} {{node_artifacts}} {{run_id}} {{node_id}} {{model}}",
-                style: .caption
-            ),
-            NSStackView(views: [apply, del]),
-            NSBox(separator: ()),
-            NSStackView(views: [newNameField, add])
-        ])
+            placeholders,
+            applyRow
+        ]
+        editorAddSectionViews = [NSBox(separator: ()), addRow]
+
+        let editor = NSStackView(views: [nameLabel, editorEmpty] + editorFormViews + editorAddSectionViews)
         editor.orientation = .vertical
         editor.alignment = .leading
         editor.spacing = 10
         editor.translatesAutoresizingMaskIntoConstraints = false
 
-        let body = NSStackView(views: [listScroll, editor])
+        let body = NSStackView(views: [listPane, editor])
         body.orientation = .horizontal
         body.alignment = .top
         body.spacing = 16
         body.translatesAutoresizingMaskIntoConstraints = false
+        editorEmpty.isHidden = true
 
         let stack = NSStackView(views: [titleRow, subtitle, body])
         stack.orientation = .vertical
@@ -142,7 +155,17 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
             stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor, constant: -16),
 
-            listScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
+            listPane.widthAnchor.constraint(equalToConstant: 180),
+            listPane.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
+            listScroll.leadingAnchor.constraint(equalTo: listPane.leadingAnchor),
+            listScroll.trailingAnchor.constraint(equalTo: listPane.trailingAnchor),
+            listScroll.topAnchor.constraint(equalTo: listPane.topAnchor),
+            listScroll.bottomAnchor.constraint(equalTo: listPane.bottomAnchor),
+            listEmpty.leadingAnchor.constraint(equalTo: listPane.leadingAnchor),
+            listEmpty.trailingAnchor.constraint(equalTo: listPane.trailingAnchor),
+            listEmpty.topAnchor.constraint(equalTo: listPane.topAnchor),
+            listEmpty.bottomAnchor.constraint(equalTo: listPane.bottomAnchor),
+            editorEmpty.widthAnchor.constraint(equalTo: editor.widthAnchor),
             argsScroll.widthAnchor.constraint(equalTo: editor.widthAnchor),
             commandField.widthAnchor.constraint(equalTo: editor.widthAnchor),
             cwdField.widthAnchor.constraint(equalTo: editor.widthAnchor),
@@ -166,7 +189,21 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         if let selected, let idx = names.firstIndex(of: selected) {
             table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
         }
+        updateEmptyStates()
         loadDraft()
+    }
+
+    private func updateEmptyStates() {
+        listEmpty.isHidden = !names.isEmpty
+        let editing = selected != nil && names.contains(selected ?? "")
+        editorEmpty.isHidden = editing || names.isEmpty
+        nameLabel.isHidden = !editing
+        for view in editorFormViews {
+            view.isHidden = !editing
+        }
+        for view in editorAddSectionViews {
+            view.isHidden = false
+        }
     }
 
     @objc private func requestCodingToolSetup() {
@@ -179,10 +216,20 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         names[row]
     }
 
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        ThemedTableRowView()
+    }
+
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
-        guard row >= 0, row < names.count else { return }
+        guard row >= 0, row < names.count else {
+            selected = nil
+            updateEmptyStates()
+            loadDraft()
+            return
+        }
         selected = names[row]
+        updateEmptyStates()
         loadDraft()
     }
 
@@ -314,6 +361,10 @@ final class RunnersController: NSObject, NSTableViewDataSource, NSTableViewDeleg
 
     @objc private func deleteRunner() {
         guard let selected, var project = model.project else { return }
+        guard ConfirmDialog.confirmDelete(
+            title: "Delete agent?",
+            message: "Remove “\(selected)” from this project? Steps using this agent will need a new binding."
+        ) else { return }
         project.runners.runners.removeValue(forKey: selected)
         model.updateRunners(project.runners)
         self.selected = nil
