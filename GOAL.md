@@ -1,0 +1,1 @@
+the graph nodes don’t look good and don’t fit all the text/elements on them. Please fix this

@@ -1,13 +1,13 @@
 nodes:
-  reviewer:
-    x: 3.4e+2
-    y: 2.0360546875e+2
-  implementer:
-    x: 3.4e+2
-    y: 8e+1
-  planner:
-    x: 7.986328125e+1
-    y: 8.039453125e+1
   node_1:
     x: 1.44125e+2
     y: 1.44e+2
+  implementer:
+    x: 3.494453125e+2
+    y: 8.689453125e+1
+  reviewer:
+    x: 3.59046875e+2
+    y: 2.1107421875e+2
+  planner:
+    x: 7.986328125e+1
+    y: 8.039453125e+1

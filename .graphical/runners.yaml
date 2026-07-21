@@ -1,56 +1,28 @@
 runners:
-  echo_fixture:
-    command: /bin/bash
-    args:
-    - -lc
-    - |
-      set -euo pipefail
-      PACKET={{prompt_file}}
-      OUT={{node_artifacts}}
-      mkdir -p "$OUT"
-      ROLE=$(basename "$OUT")
-      case "$ROLE" in
-        planner)
-          echo "# Plan" > "$OUT/plan.md"
-          echo "Implement the goal in small steps." >> "$OUT/plan.md"
-          printf '%s\n' '{"node_id":"implementer","reason":"Plan ready for implementation"}' > "$OUT/next.json"
-          ;;
-        implementer)
-          echo "# Implementation" > "$OUT/implementation.md"
-          echo "Done." >> "$OUT/implementation.md"
-          ;;
-        reviewer)
-          echo "# Review" > "$OUT/review.md"
-          echo "Approved." >> "$OUT/review.md"
-          ;;
-        *)
-          echo "# Output" > "$OUT/output.md"
-          ;;
-      esac
-      echo "Fixture runner completed for $ROLE (packet: $PACKET)"
-    cwd: "{{project_root}}"
-    env: {}
-    kind: custom
-  cursor_agent:
-    command: /bin/bash
-    args:
-    - -lc
-    - |
-      set -euo pipefail
-      export PATH="$HOME/.local/bin:$PATH"
-      cursor-agent -p --trust --force --workspace {{project_root}} --model {{model}} "$(cat {{prompt_file}})"
-    cwd: "{{project_root}}"
-    env: {}
-    kind: cursor_agent
-    default_model: composer-2.5-fast
   claude_code:
     command: claude
     args:
     - -p
-    - "{{prompt_file}}"
+    - '{{prompt_file}}'
     - --model
-    - "{{model}}"
-    cwd: "{{project_root}}"
+    - '{{model}}'
+    cwd: '{{project_root}}'
     env: {}
     kind: claude_code
     default_model: sonnet
+  cursor_agent:
+    command: /bin/bash
+    args:
+    - -lc
+    - 'set -euo pipefail
+
+      export PATH="$HOME/.local/bin:$PATH"
+
+      cursor-agent -p --trust --force --workspace {{project_root}} --model {{model}}
+      "$(cat {{prompt_file}})"
+
+      '
+    cwd: '{{project_root}}'
+    env: {}
+    kind: cursor_agent
+    default_model: composer-2.5-fast
