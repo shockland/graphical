@@ -107,8 +107,9 @@ public enum ModelCatalog {
         timeoutSeconds: Int
     ) async -> [CatalogModel] {
         let probes: [(command: String, arguments: [String])] = [
+            ("cursor-agent", ["models"]),
+            ("cursor-agent", ["--list-models"]),
             ("agent", ["models"]),
-            ("agent", ["--list-models"]),
             ("cursor", ["agent", "models"])
         ]
         for probe in probes {
@@ -118,7 +119,8 @@ public enum ModelCatalog {
                     arguments: probe.arguments,
                     workingDirectory: nil,
                     environment: [:],
-                    timeoutSeconds: timeoutSeconds
+                    timeoutSeconds: timeoutSeconds,
+                    inheritEnvironment: true
                 )
                 guard result.succeeded else { continue }
                 let parsed = parseAgentModelsOutput(result.stdout)
