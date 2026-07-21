@@ -203,8 +203,9 @@ final class AgentPresetPickerView: NSView {
                 .paragraphStyle: paragraph
             ]
         )
+        card.contentTintColor = nil
         card.state = isSelected ? .on : .off
-        card.bezelColor = isSelected ? Theme.accentSoft : Theme.surface
+        card.bezelColor = isSelected ? Theme.buttonSecondaryActiveFill : Theme.surface
         card.isEnabled = true
         card.toolTip = "\(preset.displayName). \(status.text)."
         card.setAccessibilityLabel(preset.displayName)

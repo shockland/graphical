@@ -180,12 +180,8 @@ final class ProjectGuideView: NSView {
         invalidateIntrinsicContentSize()
     }
 
-    private func compactButton(title: String, action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.bezelStyle = .rounded
-        button.controlSize = .small
-        button.font = Theme.bodyFont(ofSize: 11, weight: .medium)
-        return button
+    private func compactButton(title: String, action: Selector) -> PrimaryButton {
+        PrimaryButton(title: title, style: .secondary, target: self, action: action)
     }
 
     private func explanation(for action: Action) -> String {

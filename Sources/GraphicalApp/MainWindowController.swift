@@ -602,8 +602,6 @@ final class ValidationBannerView: NSView {
 
         summaryButton.bezelStyle = .inline
         summaryButton.isBordered = false
-        summaryButton.font = Theme.bodyFont(ofSize: 12, weight: .medium)
-        summaryButton.contentTintColor = Theme.warning
         summaryButton.alignment = .left
         summaryButton.target = self
         summaryButton.action = #selector(summaryTapped)
@@ -624,7 +622,15 @@ final class ValidationBannerView: NSView {
         self.issues = issues
         let count = issues.count
         let noun = count == 1 ? "issue" : "issues"
-        summaryButton.title = "\(count) workflow \(noun) — click to review"
+        let text = "\(count) workflow \(noun) — click to review"
+        summaryButton.contentTintColor = nil
+        summaryButton.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [
+                .font: Theme.bodyFont(ofSize: 12, weight: .medium),
+                .foregroundColor: Theme.warning
+            ]
+        )
         preferredHeight = 36
     }
 

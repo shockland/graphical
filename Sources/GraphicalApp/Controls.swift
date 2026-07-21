@@ -10,11 +10,16 @@ final class PrimaryButton: NSButton {
 
     private let style: Style
     private var displayTitle: String
+    private let horizontalPadding: CGFloat = 12
     var isActive = false {
         didSet { applyStyle() }
     }
 
     override var isEnabled: Bool {
+        didSet { applyStyle() }
+    }
+
+    override var isHighlighted: Bool {
         didSet { applyStyle() }
     }
 
@@ -24,6 +29,24 @@ final class PrimaryButton: NSButton {
             displayTitle = newValue
             applyStyle()
         }
+    }
+
+    override var image: NSImage? {
+        didSet { applyStyle() }
+    }
+
+    override var imagePosition: NSControl.ImagePosition {
+        didSet { applyStyle() }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        var size = super.intrinsicContentSize
+        // Borderless (layer-backed) fills don't get system bezel padding.
+        if !isBordered {
+            size.width += horizontalPadding * 2
+        }
+        size.height = max(size.height, 28)
+        return size
     }
 
     init(title: String, style: Style = .secondary, target: AnyObject?, action: Selector?) {
@@ -50,33 +73,72 @@ final class PrimaryButton: NSButton {
         let font = Theme.bodyFont(ofSize: 13, weight: .medium)
         let titleColor: NSColor
         let tint: NSColor
+        // `bezelColor` always paints white labels — fine on accent/danger, but
+        // unreadable on light secondary/disabled fills. Those use a layer fill.
+        let useBezelColor: Bool
+        let fill: NSColor?
 
-        isBordered = true
         switch style {
         case .primary:
-            bezelColor = enabled ? Theme.accent : Theme.accent.withAlphaComponent(0.45)
-            titleColor = .white
-            tint = .white
-        case .secondary:
-            if isActive {
-                bezelColor = Theme.accentSoft
-                titleColor = Theme.accent
-                tint = Theme.accent
+            if enabled {
+                useBezelColor = true
+                fill = Theme.accent
+                titleColor = Theme.onAccentLabel
+                tint = Theme.onAccentLabel
             } else {
-                // Distinct from the page background so labels stay readable.
-                bezelColor = Theme.rail
-                titleColor = enabled ? Theme.text : Theme.muted
+                useBezelColor = false
+                fill = Theme.buttonDisabledFill
+                titleColor = Theme.buttonDisabledLabel
+                tint = Theme.buttonDisabledLabel
+            }
+        case .secondary:
+            useBezelColor = false
+            if isActive {
+                fill = Theme.buttonSecondaryActiveFill
+                titleColor = Theme.buttonSecondaryActiveLabel
+                tint = Theme.buttonSecondaryActiveLabel
+            } else {
+                fill = Theme.buttonSecondaryFill
+                titleColor = enabled ? Theme.buttonSecondaryLabel : Theme.buttonDisabledLabel
                 tint = titleColor
             }
         case .danger:
-            bezelColor = enabled ? Theme.danger : Theme.danger.withAlphaComponent(0.45)
-            titleColor = .white
-            tint = .white
+            if enabled {
+                useBezelColor = true
+                fill = Theme.danger
+                titleColor = Theme.onAccentLabel
+                tint = Theme.onAccentLabel
+            } else {
+                useBezelColor = false
+                fill = Theme.buttonDisabledDangerFill
+                titleColor = Theme.buttonDisabledLabel
+                tint = Theme.buttonDisabledLabel
+            }
         case .ghost:
-            isBordered = false
-            bezelColor = nil
-            titleColor = enabled ? Theme.muted : Theme.muted.withAlphaComponent(0.55)
+            useBezelColor = false
+            fill = nil
+            titleColor = enabled ? Theme.buttonGhostLabel : Theme.buttonGhostDisabledLabel
             tint = titleColor
+        }
+
+        if useBezelColor {
+            isBordered = true
+            bezelStyle = .rounded
+            bezelColor = fill
+            wantsLayer = false
+            layer?.backgroundColor = nil
+            layer?.cornerRadius = 0
+        } else {
+            isBordered = false
+            bezelStyle = .inline
+            bezelColor = nil
+            wantsLayer = true
+            var background = fill ?? .clear
+            if isHighlighted, fill != nil {
+                background = background.blended(withFraction: 0.12, of: .black) ?? background
+            }
+            layer?.backgroundColor = background.cgColor
+            layer?.cornerRadius = Theme.controlRadius
         }
 
         contentTintColor = tint
@@ -87,6 +149,7 @@ final class PrimaryButton: NSButton {
                 .foregroundColor: titleColor
             ]
         )
+        invalidateIntrinsicContentSize()
     }
 }
 
@@ -275,12 +338,16 @@ final class MonoLogView: ThemedScrollView {
         AppKitText.configureWrappingTextView(textView)
         documentView = textView
 
-        jumpButton.bezelStyle = .rounded
-        jumpButton.font = Theme.bodyFont(ofSize: 11, weight: .medium)
+        jumpButton.bezelStyle = .inline
+        jumpButton.isBordered = false
+        jumpButton.wantsLayer = true
+        jumpButton.layer?.cornerRadius = Theme.controlRadius
+        jumpButton.layer?.backgroundColor = Theme.buttonSecondaryFill.cgColor
         jumpButton.target = self
         jumpButton.action = #selector(jumpToBottom)
         jumpButton.isHidden = true
         jumpButton.translatesAutoresizingMaskIntoConstraints = false
+        (jumpButton.cell as? NSButtonCell)?.imageDimsWhenDisabled = false
         addSubview(jumpButton)
         NSLayoutConstraint.activate([
             jumpButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
@@ -344,9 +411,24 @@ final class MonoLogView: ThemedScrollView {
             textView.scrollToEndOfDocument(nil)
         } else {
             pendingNewLines += newLines.count
-            jumpButton.title = "↓ \(pendingNewLines) new line\(pendingNewLines == 1 ? "" : "s")"
+            styleJumpButton("↓ \(pendingNewLines) new line\(pendingNewLines == 1 ? "" : "s")")
             jumpButton.isHidden = false
         }
+    }
+
+    private func styleJumpButton(_ title: String) {
+        jumpButton.isBordered = false
+        jumpButton.wantsLayer = true
+        jumpButton.layer?.cornerRadius = Theme.controlRadius
+        jumpButton.layer?.backgroundColor = Theme.buttonSecondaryFill.cgColor
+        jumpButton.contentTintColor = Theme.buttonSecondaryLabel
+        jumpButton.attributedTitle = NSAttributedString(
+            string: "  \(title)  ",
+            attributes: [
+                .font: Theme.bodyFont(ofSize: 11, weight: .medium),
+                .foregroundColor: Theme.buttonSecondaryLabel
+            ]
+        )
     }
 
     @objc private func jumpToBottom() {

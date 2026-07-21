@@ -306,7 +306,7 @@ final class NavRailView: NSView {
         for (tab, button) in tabButtons {
             let selected = hasProject && tab == currentTab
             button.isEnabled = hasProject
-            button.alphaValue = hasProject ? 1 : 0.45
+            button.alphaValue = hasProject ? 1 : 0.65
             let title = tab == .run && isRunning ? "\(tab.rawValue) ●" : tab.rawValue
             if selected {
                 button.layer?.backgroundColor = Theme.accentSoft.cgColor
