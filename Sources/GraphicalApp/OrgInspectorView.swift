@@ -111,7 +111,8 @@ final class OrgInspectorView: NSView {
         org: OrgGraph,
         runners: RunnersConfig,
         selectedNodeId: String?,
-        selectedEdgeId: String?
+        selectedEdgeId: String?,
+        meshWidth: Int? = nil
     ) {
         nodeIds = org.nodes.map(\.id)
         self.runners = runners
@@ -139,8 +140,22 @@ final class OrgInspectorView: NSView {
             fillNodeFields(node)
             addStacked(FormField(title: "Step ID", control: nodeIdField))
             addStacked(FormField(title: "Name or role", control: roleField))
-            addStacked(FormField(title: "Coding tool", control: agentPopup))
-            addStacked(FormField(title: "Model", control: modelPopup))
+            if let laneHint = Self.laneHint(for: node, meshWidth: meshWidth) {
+                let hint = AppKitText.label(laneHint, style: .muted)
+                hint.lineBreakMode = .byWordWrapping
+                hint.maximumNumberOfLines = 2
+                addStacked(hint)
+            }
+            addStacked(FormField(
+                title: "Coding tool (this step)",
+                help: "Applies only to the selected step. Planners diverge by default — use Mirror to copy onto same-role peers.",
+                control: agentPopup
+            ))
+            addStacked(FormField(
+                title: "Model (this step)",
+                help: "Optional override for this step only. Leave on the runner default to inherit.",
+                control: modelPopup
+            ))
             let peerCount = org.nodes.filter { $0.role == node.role && $0.id != node.id }.count
             if peerCount > 0 {
                 let mirrorTitle = peerCount == 1
@@ -154,9 +169,16 @@ final class OrgInspectorView: NSView {
                 )
                 mirror.setAccessibilityLabel(mirrorTitle)
                 mirror.setAccessibilityHelp(
-                    "Copy this step’s coding tool and model onto every other step with the same role."
+                    "Overwrites coding tool and model on every other step with the same role. Opt-in — steps diverge by default."
                 )
+                let mirrorNote = AppKitText.label(
+                    "Overwrites same-role peers. Steps keep independent tools/models unless you mirror.",
+                    style: .muted
+                )
+                mirrorNote.lineBreakMode = .byWordWrapping
+                mirrorNote.maximumNumberOfLines = 3
                 addStacked(mirror)
+                addStacked(mirrorNote)
             }
             addStacked(FormField(title: "Retry limit", control: maxIterField))
             addStacked(FormField(title: "Instructions", control: wrapTextView(instructionsView, height: 100)))
@@ -402,6 +424,21 @@ final class OrgInspectorView: NSView {
         currentNode = node
         delegate?.orgInspector(self, didUpdateNode: node)
         delegate?.orgInspector(self, didMirrorAgentAndModelFrom: node.id)
+    }
+
+    /// Optional "Lane N of meshWidth" hint for numbered planner/interpreter nodes.
+    private static func laneHint(for node: OrgNode, meshWidth: Int?) -> String? {
+        guard let dash = node.id.lastIndex(of: "-"),
+              let lane = Int(node.id[node.id.index(after: dash)...]),
+              lane >= 1 else {
+            return nil
+        }
+        let prefix = String(node.id[..<dash])
+        guard prefix == "planner" || prefix == "interpreter" else { return nil }
+        if let meshWidth, meshWidth >= lane {
+            return "Lane \(lane) of \(meshWidth)"
+        }
+        return "Lane \(lane)"
     }
 
     private func makeNodeFromFields() -> OrgNode? {

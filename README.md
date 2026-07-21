@@ -129,6 +129,12 @@ Graphical runs arbitrary local CLI agents and shell commands on your behalf. Kee
 | Reject edge | `on: reject` edge a node can trigger via `reject.json` to send work back instead of advancing |
 | Fan-out edge | `type: fan_out` — after success, activate **all** `targets` (AND), unlike router (XOR) |
 | Join edge | `type: join` — destination runs only after all inbound join predecessors succeed; multi-inbound packet |
-| Mesh width | `project.yaml` `meshWidth` used when seeding `SeedTemplate.agenticMesh`; static after seed |
+| Mesh width | `project.yaml` `meshWidth` used when seeding `SeedTemplate.agenticMesh`; **seed-time only** — re-seed to change lane count (runtime does not insert/remove lanes) |
 | Parallel fan-out | `project.yaml` `parallelFanOut` (default true) — run fan-out lane heads concurrently |
+| Planner | Org node with its own `runner` / optional `model`; emits `plan.md` for its paired interpreter |
+| Interpreter | Extracts goals from inbound `plan.md` into `interpretation.md` (does not re-plan); joins into the auditor |
+| Auditor | Barrier-joins all interpreter lanes and synthesizes one `final-plan.md`; approval-gates the implementer |
+| Implementer | Single post-auditor success-path node that executes the merged plan |
 | Goal source | `GOAL.md`, kept in sync with `project.yaml`'s `goal` field on Save |
+
+Planners diverge by default (edit Agent/Model on the selected node). **Mirror tool & model** is an explicit inspector action that overwrites same-role peers. Coding-tool presets rebind the shared runner but skip planner nodes the user has already customized.

@@ -97,6 +97,37 @@ final class RunEngineTests: XCTestCase {
         XCTAssertTrue(auditorText.contains("## Inbound Handoffs"))
         XCTAssertTrue(auditorText.contains("### From interpreter-1"))
         XCTAssertTrue(auditorText.contains("### From interpreter-2"))
+        XCTAssertTrue(
+            auditorText.contains("interpretation.md"),
+            "auditor join packet must list interpretation.md artifact paths:\n\(auditorText)"
+        )
+        let idx1 = auditorText.range(of: "### From interpreter-1")!.lowerBound
+        let idx2 = auditorText.range(of: "### From interpreter-2")!.lowerBound
+        XCTAssertLessThan(idx1, idx2, "lanes must appear in numeric order")
+
+        for nodeId in ["planner-1", "planner-2"] {
+            let plan = GraphicalPaths.nodeArtifacts(
+                projectRoot: root, runId: finished.id, nodeId: nodeId
+            ).appendingPathComponent("plan.md")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: plan.path), "missing \(nodeId)/plan.md")
+        }
+        for nodeId in ["interpreter-1", "interpreter-2"] {
+            let interpretation = GraphicalPaths.nodeArtifacts(
+                projectRoot: root, runId: finished.id, nodeId: nodeId
+            ).appendingPathComponent("interpretation.md")
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: interpretation.path),
+                "missing \(nodeId)/interpretation.md"
+            )
+        }
+        let finalPlan = GraphicalPaths.nodeArtifacts(
+            projectRoot: root, runId: finished.id, nodeId: "auditor"
+        ).appendingPathComponent("final-plan.md")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finalPlan.path))
+        let implementation = GraphicalPaths.nodeArtifacts(
+            projectRoot: root, runId: finished.id, nodeId: "implementer"
+        ).appendingPathComponent("implementation.md")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: implementation.path))
 
         let implementerPacket = GraphicalPaths.nodeArtifacts(
             projectRoot: root,
@@ -107,6 +138,10 @@ final class RunEngineTests: XCTestCase {
         XCTAssertTrue(implementerText.contains("## Inbound Handoff"))
         XCTAssertFalse(implementerText.contains("## Inbound Handoffs"))
         XCTAssertTrue(implementerText.contains("Auditor chose the final plan"))
+        XCTAssertTrue(
+            implementerText.contains("final-plan.md") || implementerText.contains("/final-plan.md"),
+            "implementer packet should list final-plan.md:\n\(implementerText)"
+        )
         XCTAssertFalse(implementerText.contains("### From interpreter-1"))
 
         let report = GraphicalPaths.nodeArtifacts(
@@ -119,6 +154,214 @@ final class RunEngineTests: XCTestCase {
         XCTAssertTrue(log.contains { $0.contains("fan-out") }, "log: \(log)")
         XCTAssertTrue(log.contains { $0.contains("Join barrier met") }, "log: \(log)")
         XCTAssertTrue(log.contains { $0.contains("parallel") }, "log: \(log)")
+    }
+
+    func testMeshContextPropagatesPlannerTokenToInterpreterAndAuditor() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graphical-mesh-ctx-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let token = "MESH_TOKEN_\(UUID().uuidString.prefix(8))"
+        var project = try YAMLStore().createProject(
+            at: root,
+            name: "MeshCtx",
+            seed: .agenticMesh,
+            meshWidth: 2
+        )
+        if let idx = project.org.edges.firstIndex(where: { $0.id == "auditor-to-implementer" }) {
+            project.org.edges[idx].requiresApproval = false
+        }
+        project.runners.runners["echo_fixture"] = RunnerTemplate(
+            command: "/bin/bash",
+            args: [
+                "-lc",
+                """
+                set -euo pipefail
+                OUT={{node_artifacts}}
+                mkdir -p "$OUT"
+                ROLE=$(basename "$OUT")
+                case "$ROLE" in
+                  entry)
+                    echo "Mesh ready." > "$OUT/summary.txt"
+                    ;;
+                  planner-1)
+                    echo "# Plan \(token)" > "$OUT/plan.md"
+                    echo "Token \(token) for interpreter." > "$OUT/summary.txt"
+                    ;;
+                  planner-*)
+                    echo "# Plan other" > "$OUT/plan.md"
+                    echo "Other planner." > "$OUT/summary.txt"
+                    ;;
+                  interpreter-1)
+                    echo "# Interpretation" > "$OUT/interpretation.md"
+                    echo "Saw \(token)" >> "$OUT/interpretation.md"
+                    echo "1 goals extracted" > "$OUT/summary.txt"
+                    ;;
+                  interpreter-*)
+                    echo "# Interpretation" > "$OUT/interpretation.md"
+                    echo "Other lane." >> "$OUT/interpretation.md"
+                    echo "1 goals extracted" > "$OUT/summary.txt"
+                    ;;
+                  auditor)
+                    echo "# Final Plan" > "$OUT/final-plan.md"
+                    echo "Merged." >> "$OUT/final-plan.md"
+                    echo "Auditor chose the final plan." > "$OUT/summary.txt"
+                    ;;
+                  implementer)
+                    echo "# Implementation" > "$OUT/implementation.md"
+                    echo "Done." >> "$OUT/implementation.md"
+                    echo "Implementation complete." > "$OUT/summary.txt"
+                    ;;
+                  report)
+                    echo "# Report" > "$OUT/report.md"
+                    ;;
+                  *)
+                    echo ok > "$OUT/output.md"
+                    ;;
+                esac
+                """
+            ],
+            cwd: "{{project_root}}",
+            kind: .custom
+        )
+
+        let store = try TraceStore(inMemory: true)
+        let engine = RunEngine(store: store)
+        let finished = try await engine.start(project: project, goal: "Propagate \(token)")
+        XCTAssertEqual(finished.status, .succeeded)
+
+        let interpreterPacket = try String(
+            contentsOf: GraphicalPaths.nodeArtifacts(
+                projectRoot: root, runId: finished.id, nodeId: "interpreter-1"
+            ).appendingPathComponent("packet-1.md"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(interpreterPacket.contains(token), "interpreter packet missing token:\n\(interpreterPacket)")
+        XCTAssertTrue(
+            interpreterPacket.contains("plan.md") || interpreterPacket.contains("/plan.md"),
+            "interpreter packet should list plan.md artifact"
+        )
+
+        let auditorPacket = try String(
+            contentsOf: GraphicalPaths.nodeArtifacts(
+                projectRoot: root, runId: finished.id, nodeId: "auditor"
+            ).appendingPathComponent("packet-1.md"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(auditorPacket.contains("## Inbound Handoffs"))
+        XCTAssertTrue(auditorPacket.contains("### From interpreter-1"))
+        XCTAssertTrue(auditorPacket.contains("### From interpreter-2"))
+        let idx1 = auditorPacket.range(of: "### From interpreter-1")!.lowerBound
+        let idx2 = auditorPacket.range(of: "### From interpreter-2")!.lowerBound
+        XCTAssertLessThan(idx1, idx2, "lanes must appear in numeric order")
+        // Interpreter-1 summary carries the planner token into the join packet.
+        XCTAssertTrue(auditorPacket.contains(token), "auditor packet missing token:\n\(auditorPacket)")
+        XCTAssertTrue(
+            auditorPacket.contains("interpretation.md"),
+            "auditor packet must list interpretation.md paths:\n\(auditorPacket)"
+        )
+    }
+
+    func testMeshJoinWaitsForAllInterpreters() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graphical-mesh-join-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = try YAMLStore().createProject(
+            at: root,
+            name: "MeshJoin",
+            seed: .agenticMesh,
+            meshWidth: 2
+        )
+        if let idx = project.org.edges.firstIndex(where: { $0.id == "auditor-to-implementer" }) {
+            project.org.edges[idx].requiresApproval = false
+        }
+        // Make interpreter-2 never satisfy done-checks.
+        if let idx = project.org.nodes.firstIndex(where: { $0.id == "interpreter-2" }) {
+            project.org.nodes[idx].done = .allOf([.artifact("never-written.md")])
+            project.org.nodes[idx].maxIterations = 1
+        }
+
+        let engine = RunEngine(store: try TraceStore(inMemory: true))
+        var runId: String?
+        do {
+            let finished = try await engine.start(project: project, goal: "Incomplete join")
+            runId = finished.id
+            XCTAssertEqual(finished.status, .failed)
+        } catch {
+            runId = await engine.currentRun?.id
+        }
+        if let runId {
+            let auditorDir = GraphicalPaths.nodeArtifacts(
+                projectRoot: root, runId: runId, nodeId: "auditor"
+            )
+            let packet = auditorDir.appendingPathComponent("packet-1.md")
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: packet.path),
+                "auditor must not activate before all interpreters complete"
+            )
+        } else {
+            XCTFail("expected a run record after incomplete join")
+        }
+    }
+
+    func testMeshImplementerActivatesExactlyOnceThroughApproval() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("graphical-mesh-once-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = try YAMLStore().createProject(
+            at: root,
+            name: "MeshOnce",
+            seed: .agenticMesh,
+            meshWidth: 2
+        )
+        XCTAssertTrue(
+            project.org.edges.contains { $0.id == "auditor-to-implementer" && $0.requiresApproval }
+        )
+
+        let store = try TraceStore(inMemory: true)
+        let engine = RunEngine(store: store)
+        let first = try await engine.start(project: project, goal: "Approve once")
+        XCTAssertEqual(first.status, .awaitingApproval)
+        let pending = await engine.pendingApproval
+        XCTAssertEqual(pending?.inspection.toNode, "implementer")
+
+        let finished = try await engine.approve()
+        XCTAssertEqual(finished.status, .succeeded)
+
+        let events = try await store.events(runId: finished.id)
+        let implementerStarts = events.filter {
+            $0.nodeId == "implementer" && $0.kind == .iterationStarted
+        }
+        XCTAssertEqual(
+            implementerStarts.count,
+            1,
+            "implementer must activate exactly once after approval, got \(implementerStarts.count)"
+        )
+
+        do {
+            _ = try await engine.approve()
+            XCTFail("second approve should fail")
+        } catch {
+            // expected
+        }
+
+        do {
+            try await engine.retryActiveNode()
+            XCTFail("retry on succeeded run should fail")
+        } catch {
+            // expected — must not re-activate implementer
+        }
+
+        let eventsAfter = try await store.events(runId: finished.id)
+        let startsAfter = eventsAfter.filter {
+            $0.nodeId == "implementer" && $0.kind == .iterationStarted
+        }
+        XCTAssertEqual(startsAfter.count, 1)
     }
 
     func testFanOutLanesOverlapWhenParallelEnabled() async throws {
@@ -140,6 +383,10 @@ final class RunEngineTests: XCTestCase {
 
         let peakRunner = PeakConcurrencyProcessRunner(sleepNanoseconds: 150_000_000)
         let engine = RunEngine(store: try TraceStore(inMemory: true), processRunner: peakRunner)
+        let activePeak = ActiveNodeIdsPeak()
+        await engine.setProgressHandler { snapshot in
+            await activePeak.consider(snapshot.activeNodeIds)
+        }
         let finished = try await engine.start(project: project, goal: "Overlap lanes")
         XCTAssertEqual(finished.status, .succeeded)
         XCTAssertGreaterThanOrEqual(
@@ -147,6 +394,14 @@ final class RunEngineTests: XCTestCase {
             2,
             "Expected planner lanes to overlap, peak=\(peakRunner.peakConcurrency)"
         )
+        let peakActive = await activePeak.peakCount
+        XCTAssertGreaterThanOrEqual(
+            peakActive,
+            2,
+            "Expected multiple glowing active nodes during parallel fan-out, peak=\(peakActive)"
+        )
+        let sawBothPlanners = await activePeak.sawBothPlanners
+        XCTAssertTrue(sawBothPlanners, "Expected both planners active together at least once")
     }
 
     func testFanOutLanesStaySerialWhenParallelDisabled() async throws {
@@ -414,9 +669,13 @@ final class RunEngineTests: XCTestCase {
         let engine = RunEngine(store: try TraceStore(inMemory: true))
         let run = try await engine.start(project: project, goal: "c")
         XCTAssertEqual(run.status, .awaitingApproval)
+        let pendingBefore = await engine.pendingApproval
+        XCTAssertNotNil(pendingBefore)
         try await engine.cancel()
         let current = await engine.currentRun
         XCTAssertEqual(current?.status, .cancelled)
+        let pendingAfter = await engine.pendingApproval
+        XCTAssertNil(pendingAfter)
     }
 
     func testCancelAfterSucceededDoesNotOverwriteStatus() async throws {
@@ -1102,6 +1361,18 @@ private actor ProgressPhaseCollector {
 
     func append(_ phase: String?) {
         values.append(phase)
+    }
+}
+
+private actor ActiveNodeIdsPeak {
+    private(set) var peakCount = 0
+    private(set) var sawBothPlanners = false
+
+    func consider(_ ids: [String]) {
+        peakCount = max(peakCount, ids.count)
+        if Set(ids).isSuperset(of: ["planner-1", "planner-2"]) {
+            sawBothPlanners = true
+        }
     }
 }
 

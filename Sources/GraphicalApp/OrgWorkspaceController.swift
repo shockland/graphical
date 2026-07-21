@@ -152,7 +152,7 @@ final class OrgWorkspaceController: NSObject {
             layout: model.layout,
             selectedNodeId: model.selectedNodeId,
             selectedEdgeId: model.selectedEdgeId,
-            activeRunNodeId: resolvedActiveRunNodeId(from: model),
+            activeRunNodeIds: resolvedActiveRunNodeIds(from: model),
             runPaused: model.run?.status == .awaitingApproval
         )
         syncToolButtons()
@@ -168,21 +168,38 @@ final class OrgWorkspaceController: NSObject {
             org: project.org,
             runners: project.runners,
             selectedNodeId: model.selectedNodeId,
-            selectedEdgeId: model.selectedEdgeId
+            selectedEdgeId: model.selectedEdgeId,
+            meshWidth: project.config.meshWidth
         )
     }
 
     func reloadRunHighlight() {
         guard model.project != nil else { return }
         canvas.setActiveRunHighlight(
-            nodeId: resolvedActiveRunNodeId(from: model),
+            nodeIds: resolvedActiveRunNodeIds(from: model),
             paused: model.run?.status == .awaitingApproval
         )
     }
 
-    private func resolvedActiveRunNodeId(from model: AppModel) -> String? {
-        guard model.isRunning || model.run?.status == .awaitingApproval else { return nil }
-        return model.run?.activeNodeId
+    private func resolvedActiveRunNodeIds(from model: AppModel) -> Set<String> {
+        if model.run?.status == .awaitingApproval {
+            if let from = model.pendingApproval?.inspection.fromNode {
+                return [from]
+            }
+            if let active = model.run?.activeNodeId {
+                return [active]
+            }
+            return []
+        }
+        guard model.isRunning else { return [] }
+        let live = model.activeRunNodeIds
+        if !live.isEmpty {
+            return Set(live)
+        }
+        if let active = model.run?.activeNodeId {
+            return [active]
+        }
+        return []
     }
 
     private func centerSelection(in org: OrgGraph) {

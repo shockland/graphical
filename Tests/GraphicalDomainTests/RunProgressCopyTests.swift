@@ -104,8 +104,13 @@ final class RunProgressCopyTests: XCTestCase {
             knownNextNodeId: "implementer",
             isRunning: false
         )
-        XCTAssertTrue(copy.headline.contains("approve handoff to Implementer"))
-        XCTAssertTrue(copy.statusBar.contains("next Implementer"))
+        XCTAssertEqual(
+            copy.headline,
+            "Paused — approve Planner → Implementer (Approve to continue)"
+        )
+        XCTAssertNil(copy.detail)
+        XCTAssertEqual(copy.activityText, copy.headline)
+        XCTAssertTrue(copy.statusBar.contains("Planner → Implementer"))
     }
 
     func testSucceededCopy() {

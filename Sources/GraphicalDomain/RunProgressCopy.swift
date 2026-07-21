@@ -47,10 +47,15 @@ public struct RunProgressCopy: Equatable, Sendable {
 
         if status == .awaitingApproval {
             let toRole = roleLabel(for: knownNextNodeId, org: org) ?? "the next step"
-            let from = role.map { " after \($0)" } ?? ""
-            let headline = "Paused — approve handoff to \(toRole)"
-            let detail = "Waiting on you\(from) before the run continues"
-            let statusBar = "Awaiting approval · next \(toRole)"
+            // One line + explicit CTA — this pause waits forever until Approve/Reject;
+            // without that hint it reads as a hung run.
+            let headline: String
+            if let fromRole = role {
+                headline = "Paused — approve \(fromRole) → \(toRole) (Approve to continue)"
+            } else {
+                headline = "Paused — approve handoff to \(toRole) (Approve to continue)"
+            }
+            let statusBar = "Awaiting approval · \(role.map { "\($0) → " } ?? "")\(toRole)"
             let runInfo = runInfoLine(
                 status: "awaiting approval",
                 role: role,
@@ -61,7 +66,7 @@ public struct RunProgressCopy: Equatable, Sendable {
             )
             return RunProgressCopy(
                 headline: headline,
-                detail: detail,
+                detail: nil,
                 statusBar: statusBar,
                 runInfo: runInfo
             )

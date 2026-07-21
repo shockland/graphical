@@ -335,16 +335,18 @@ final class RunConsoleController: NSObject {
         let failed = model.run?.status == .failed && !model.isRunning
         let succeeded = model.run?.status == .succeeded && !model.isRunning
         let cancelled = model.run?.status == .cancelled && !model.isRunning
-        if model.isRunning {
-            activityRow.isHidden = false
-            activitySpinner.startAnimation(nil)
-            activityLabel.stringValue = copy.activityText
-            activityLabel.textColor = Theme.accent
-        } else if awaitingApproval {
+        // Approval wins over isRunning so the strip doesn’t keep a spinner + “working”
+        // accent while the run is actually waiting on Approve/Reject.
+        if awaitingApproval {
             activityRow.isHidden = false
             activitySpinner.stopAnimation(nil)
             activityLabel.stringValue = copy.activityText
             activityLabel.textColor = Theme.warning
+        } else if model.isRunning {
+            activityRow.isHidden = false
+            activitySpinner.startAnimation(nil)
+            activityLabel.stringValue = copy.activityText
+            activityLabel.textColor = Theme.accent
         } else if failed {
             activityRow.isHidden = false
             activitySpinner.stopAnimation(nil)
@@ -375,7 +377,9 @@ final class RunConsoleController: NSObject {
 
     private func updateControls() {
         playButton.isEnabled = !model.isRunning && model.pendingApproval == nil
-        cancelButton.isEnabled = model.isRunning
+        // Cancel must work during an approval pause — otherwise the run looks hung
+        // with no escape if Approve/Reject aren't obvious.
+        cancelButton.isEnabled = model.isRunning || model.pendingApproval != nil
         retryButton.isEnabled = !model.isRunning
             && (model.run?.status == .failed || model.run?.status == .cancelled)
     }

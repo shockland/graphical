@@ -24,7 +24,7 @@ final class OrgCanvasView: NSView {
     private(set) var layout = CanvasLayout()
     private(set) var selectedNodeId: String?
     private(set) var selectedEdgeId: String?
-    private(set) var activeRunNodeId: String?
+    private(set) var activeRunNodeIds: Set<String> = []
     private var runPaused = false
     var tool: OrgCanvasTool = .select
     private var connectFromId: String?
@@ -60,25 +60,25 @@ final class OrgCanvasView: NSView {
         layout: CanvasLayout,
         selectedNodeId: String?,
         selectedEdgeId: String?,
-        activeRunNodeId: String? = nil,
+        activeRunNodeIds: Set<String> = [],
         runPaused: Bool = false
     ) {
         self.org = org
         self.layout = layout
         self.selectedNodeId = selectedNodeId
         self.selectedEdgeId = selectedEdgeId
-        setActiveRunHighlight(nodeId: activeRunNodeId, paused: runPaused)
+        setActiveRunHighlight(nodeIds: activeRunNodeIds, paused: runPaused)
         needsDisplay = true
         if selectedNodeId != nil || selectedEdgeId != nil {
             startSelectionPulse()
         }
     }
 
-    func setActiveRunHighlight(nodeId: String?, paused: Bool) {
-        guard activeRunNodeId != nodeId || runPaused != paused else { return }
-        activeRunNodeId = nodeId
+    func setActiveRunHighlight(nodeIds: Set<String>, paused: Bool) {
+        guard activeRunNodeIds != nodeIds || runPaused != paused else { return }
+        activeRunNodeIds = nodeIds
         runPaused = paused
-        if nodeId != nil {
+        if !nodeIds.isEmpty {
             startRunPulse()
         } else {
             stopRunPulse()
@@ -235,7 +235,7 @@ final class OrgCanvasView: NSView {
 
     private func nodeMetrics(for node: OrgNode) -> NodeMetrics {
         let isEntry = isEntryNode(node)
-        let isActiveRun = activeRunNodeId == node.id
+        let isActiveRun = activeRunNodeIds.contains(node.id)
 
         let roleFont = Theme.bodyFont(ofSize: Theme.nodeRoleFontSize, weight: .semibold)
         let metaFont = Theme.monoFont(ofSize: Theme.nodeMetaFontSize)
@@ -394,7 +394,7 @@ final class OrgCanvasView: NSView {
         let metrics = nodeMetrics(for: node)
         let rect = CGRect(origin: CGPoint(x: pos.x, y: pos.y), size: metrics.size)
         let selected = selectedNodeId == node.id
-        let isActiveRun = activeRunNodeId == node.id
+        let isActiveRun = activeRunNodeIds.contains(node.id)
 
         let path = NSBezierPath(roundedRect: rect, xRadius: Theme.cornerRadius, yRadius: Theme.cornerRadius)
 
