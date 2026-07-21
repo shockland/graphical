@@ -3,16 +3,31 @@ runners:
     command: /bin/bash
     args:
     - -lc
-    - "set -euo pipefail\nPACKET=\"{{prompt_file}}\"\nOUT=\"{{node_artifacts}}\"\nmkdir
-      -p \"$OUT\"\nROLE=$(basename \"$OUT\")\ncase \"$ROLE\" in\n  planner)\n    echo
-      \"# Plan\" > \"$OUT/plan.md\"\n    echo \"Implement the goal in small steps.\"
-      >> \"$OUT/plan.md\"\n    printf '%s\\n' '{\"node_id\":\"implementer\",\"reason\":\"Plan
-      ready for implementation\"}' > \"$OUT/next.json\"\n    ;;\n  implementer)\n
-      \   echo \"# Implementation\" > \"$OUT/implementation.md\"\n    echo \"Done.\"
-      >> \"$OUT/implementation.md\"\n    ;;\n  reviewer)\n    echo \"# Review\" >
-      \"$OUT/review.md\"\n    echo \"Approved.\" >> \"$OUT/review.md\"\n    ;;\n  *)\n
-      \   echo \"# Output\" > \"$OUT/output.md\"\n    ;;\nesac\necho \"Fixture runner
-      completed for $ROLE (packet: $PACKET)\""
+    - |
+      set -euo pipefail
+      PACKET={{prompt_file}}
+      OUT={{node_artifacts}}
+      mkdir -p "$OUT"
+      ROLE=$(basename "$OUT")
+      case "$ROLE" in
+        planner)
+          echo "# Plan" > "$OUT/plan.md"
+          echo "Implement the goal in small steps." >> "$OUT/plan.md"
+          printf '%s\n' '{"node_id":"implementer","reason":"Plan ready for implementation"}' > "$OUT/next.json"
+          ;;
+        implementer)
+          echo "# Implementation" > "$OUT/implementation.md"
+          echo "Done." >> "$OUT/implementation.md"
+          ;;
+        reviewer)
+          echo "# Review" > "$OUT/review.md"
+          echo "Approved." >> "$OUT/review.md"
+          ;;
+        *)
+          echo "# Output" > "$OUT/output.md"
+          ;;
+      esac
+      echo "Fixture runner completed for $ROLE (packet: $PACKET)"
     cwd: "{{project_root}}"
     env: {}
     kind: custom
@@ -23,7 +38,7 @@ runners:
     - |
       set -euo pipefail
       export PATH="$HOME/.local/bin:$PATH"
-      agent -p --trust --force --workspace "{{project_root}}" --model "{{model}}" "$(cat "{{prompt_file}}")"
+      cursor-agent -p --trust --force --workspace {{project_root}} --model {{model}} "$(cat {{prompt_file}})"
     cwd: "{{project_root}}"
     env: {}
     kind: cursor_agent
