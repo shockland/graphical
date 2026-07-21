@@ -1,1 +1,1 @@
-the graph nodes don’t look good and don’t fit all the text/elements on them. Please fix this
+the zoom in /out doesn’t work well. Zooming out is mostly fine, but zooming in is buggy

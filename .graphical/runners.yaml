@@ -1,15 +1,4 @@
 runners:
-  claude_code:
-    command: claude
-    args:
-    - -p
-    - '{{prompt_file}}'
-    - --model
-    - '{{model}}'
-    cwd: '{{project_root}}'
-    env: {}
-    kind: claude_code
-    default_model: sonnet
   cursor_agent:
     command: /bin/bash
     args:

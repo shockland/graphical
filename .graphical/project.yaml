@@ -1,6 +1,6 @@
 name: Graphical
-goal: "the graph nodes don\u2019t look good and don\u2019t fit all the text/elements
-  on them. Please fix this"
+goal: "the zoom in /out doesn\u2019t work well. Zooming out is mostly fine, but zooming
+  in is buggy"
 goalFile: GOAL.md
 defaultMaxIterations: 3
 defaultTimeoutSeconds: 600
