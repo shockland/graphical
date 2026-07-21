@@ -8,19 +8,44 @@ public struct ProjectConfig: Codable, Equatable, Sendable {
     public var goalFile: String?
     public var defaultMaxIterations: Int
     public var defaultTimeoutSeconds: Int
+    /// When `false` (default), `.cliFinished` trace events omit raw stdout/stderr text —
+    /// only sizes/exit status are persisted to the durable SQLite trace store, since CLI
+    /// output routinely echoes secrets (tokens, `.env` contents). Opt in per-project to
+    /// aid debugging; see plans/011-trace-output-redaction.md.
+    public var traceCLIOutput: Bool
 
     public init(
         name: String,
         goal: String = "",
         goalFile: String? = "GOAL.md",
         defaultMaxIterations: Int = 5,
-        defaultTimeoutSeconds: Int = 600
+        defaultTimeoutSeconds: Int = 600,
+        traceCLIOutput: Bool = false
     ) {
         self.name = name
         self.goal = goal
         self.goalFile = goalFile
         self.defaultMaxIterations = defaultMaxIterations
         self.defaultTimeoutSeconds = defaultTimeoutSeconds
+        self.traceCLIOutput = traceCLIOutput
+    }
+
+    // No CodingKeys remapping: on-disk `project.yaml` uses these camelCase property
+    // names verbatim (see `goalFile`, `defaultMaxIterations`). Custom `init(from:)`
+    // only exists to default `traceCLIOutput` to `false` for pre-existing project
+    // files that predate this field, matching the other optional-with-default fields.
+    private enum CodingKeys: String, CodingKey {
+        case name, goal, goalFile, defaultMaxIterations, defaultTimeoutSeconds, traceCLIOutput
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        goal = try container.decodeIfPresent(String.self, forKey: .goal) ?? ""
+        goalFile = try container.decodeIfPresent(String.self, forKey: .goalFile)
+        defaultMaxIterations = try container.decodeIfPresent(Int.self, forKey: .defaultMaxIterations) ?? 5
+        defaultTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .defaultTimeoutSeconds) ?? 600
+        traceCLIOutput = try container.decodeIfPresent(Bool.self, forKey: .traceCLIOutput) ?? false
     }
 }
 
@@ -65,6 +90,15 @@ public enum DoneCheck: Codable, Equatable, Sendable {
             try container.encode(command, forKey: .shell)
         case .routerNext:
             try container.encode(true, forKey: .routerNext)
+        }
+    }
+
+    /// Stable label shared by retry hints, evaluator results, and Still Missing lists.
+    public var displayName: String {
+        switch self {
+        case .artifact(let path): return "artifact:\(path)"
+        case .shell(let command): return "shell:\(command)"
+        case .routerNext: return "router_next"
         }
     }
 }
@@ -238,6 +272,27 @@ public struct OrgGraph: Codable, Equatable, Sendable {
 
     public func outgoingEdges(from nodeId: String) -> [OrgEdge] {
         edges.filter { $0.from == nodeId }
+    }
+
+    /// Node ids reachable via success/always edges (fixed `to` or router targets).
+    /// Order follows edge declaration; duplicates are dropped. Reject/fail edges omitted.
+    public func successNextNodeIds(from nodeId: String) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for edge in outgoingEdges(from: nodeId) {
+            guard edge.on == .success || edge.on == .always else { continue }
+            let nexts: [String]
+            switch edge.type {
+            case .fixed:
+                nexts = edge.to.map { [$0] } ?? []
+            case .router:
+                nexts = edge.targets
+            }
+            for next in nexts where seen.insert(next).inserted {
+                result.append(next)
+            }
+        }
+        return result
     }
 
     public var entryNodeId: String? {

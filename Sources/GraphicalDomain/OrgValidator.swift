@@ -11,8 +11,50 @@ public enum OrgValidationIssue: Equatable, Sendable, Identifiable {
     case unknownRunner(nodeId: String, runner: String)
     case maxIterationsInvalid(nodeId: String)
     case routerFanOutTooLarge(edgeId: String, count: Int, max: Int)
+    case unsafeNodeId(String)
+    case emptyDoneChecks(nodeId: String)
 
     public var id: String { message }
+
+    /// Node to select when the user clicks this issue in the validation banner.
+    public var focusNodeId: String? {
+        switch self {
+        case .missingEntry(let id):
+            return id
+        case .danglingEdge(_, let nodeId):
+            return nodeId
+        case .duplicateNodeId(let id):
+            return id
+        case .unknownRunner(let nodeId, _):
+            return nodeId
+        case .maxIterationsInvalid(let nodeId):
+            return nodeId
+        case .unsafeNodeId(let id):
+            return id
+        case .emptyDoneChecks(let nodeId):
+            return nodeId
+        default:
+            return nil
+        }
+    }
+
+    /// Edge to select when the user clicks this issue in the validation banner.
+    public var focusEdgeId: String? {
+        switch self {
+        case .danglingEdge(let edgeId, _):
+            return edgeId
+        case .routerWithoutTargets(let edgeId):
+            return edgeId
+        case .routerTargetUnknown(let edgeId, _):
+            return edgeId
+        case .fixedEdgeMissingTo(let edgeId):
+            return edgeId
+        case .routerFanOutTooLarge(let edgeId, _, _):
+            return edgeId
+        default:
+            return nil
+        }
+    }
 
     public var message: String {
         switch self {
@@ -36,6 +78,10 @@ public enum OrgValidationIssue: Equatable, Sendable, Identifiable {
             return "Node '\(nodeId)' max_iterations must be >= 1"
         case .routerFanOutTooLarge(let edgeId, let count, let max):
             return "Router edge '\(edgeId)' has \(count) targets (max \(max))"
+        case .unsafeNodeId(let id):
+            return "Node id '\(id)' contains unsafe characters (allowed: letters, digits, '.', '_', '-')"
+        case .emptyDoneChecks(let nodeId):
+            return "Node '\(nodeId)' has no done checks (empty allOf/anyOf groups fail closed)"
         }
     }
 }
@@ -56,11 +102,17 @@ public enum OrgValidator {
             if !seen.insert(node.id).inserted {
                 issues.append(.duplicateNodeId(node.id))
             }
+            if !PathSafety.isSafeNodeId(node.id) {
+                issues.append(.unsafeNodeId(node.id))
+            }
             if node.maxIterations < 1 {
                 issues.append(.maxIterationsInvalid(nodeId: node.id))
             }
             if runners.runners[node.runner] == nil {
                 issues.append(.unknownRunner(nodeId: node.id, runner: node.runner))
+            }
+            if node.done.checks.isEmpty {
+                issues.append(.emptyDoneChecks(nodeId: node.id))
             }
         }
 

@@ -2,12 +2,20 @@ import Foundation
 
 public enum SeedTemplate {
     /// Planner (router) → Implementer → Reviewer with optional approval before implementer.
-    public static func plannerImplementerReviewer() -> OrgGraph {
+    ///
+    /// The no-argument form intentionally preserves the original `echo_fixture` demo,
+    /// including its inert Claude-style model labels. When a runner kind is supplied,
+    /// those labels are retained only for Claude Code, where they are valid aliases.
+    public static func plannerImplementerReviewer(
+        runnerName: String = "echo_fixture",
+        agentKind: AgentKind? = nil
+    ) -> OrgGraph {
+        let preserveClaudeModels = agentKind == nil || agentKind == .claudeCode
         let planner = OrgNode(
             id: "planner",
             role: "Planner",
-            runner: "echo_fixture",
-            model: "opus",
+            runner: runnerName,
+            model: preserveClaudeModels ? "opus" : nil,
             instructions: """
             You are the Planner. Produce plan.md with a short implementation plan.
             Then write next.json choosing the next hop (usually implementer).
@@ -23,8 +31,8 @@ public enum SeedTemplate {
         let implementer = OrgNode(
             id: "implementer",
             role: "Implementer",
-            runner: "echo_fixture",
-            model: "sonnet",
+            runner: runnerName,
+            model: preserveClaudeModels ? "sonnet" : nil,
             instructions: """
             You are the Implementer. Follow plan.md and produce implementation.md.
             Ensure the shell check passes.
@@ -40,8 +48,8 @@ public enum SeedTemplate {
         let reviewer = OrgNode(
             id: "reviewer",
             role: "Reviewer",
-            runner: "echo_fixture",
-            model: "fable",
+            runner: runnerName,
+            model: preserveClaudeModels ? "fable" : nil,
             instructions: """
             You are the Reviewer. Produce review.md with approve or reject notes.
             """,
@@ -93,8 +101,8 @@ public enum SeedTemplate {
                     "-lc",
                     """
                     set -euo pipefail
-                    PACKET="{{prompt_file}}"
-                    OUT="{{node_artifacts}}"
+                    PACKET={{prompt_file}}
+                    OUT={{node_artifacts}}
                     mkdir -p "$OUT"
                     ROLE=$(basename "$OUT")
                     case "$ROLE" in
@@ -138,7 +146,7 @@ public enum SeedTemplate {
                     """
                     set -euo pipefail
                     export PATH="$HOME/.local/bin:$PATH"
-                    agent -p --trust --force --workspace "{{project_root}}" --model "{{model}}" "$(cat "{{prompt_file}}")"
+                    cursor-agent -p --trust --force --workspace {{project_root}} --model {{model}} "$(cat {{prompt_file}})"
                     """
                 ],
                 cwd: "{{project_root}}",

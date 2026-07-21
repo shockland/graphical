@@ -63,6 +63,7 @@ public enum YAMLStoreError: Error, LocalizedError, Equatable {
     case encodeFailed(String)
     case decodeFailed(String)
     case ioFailed(String)
+    case unsafeGoalFile(String)
 
     public var errorDescription: String? {
         switch self {
@@ -71,6 +72,7 @@ public enum YAMLStoreError: Error, LocalizedError, Equatable {
         case .encodeFailed(let msg): return "YAML encode failed: \(msg)"
         case .decodeFailed(let msg): return "YAML decode failed: \(msg)"
         case .ioFailed(let msg): return "I/O failed: \(msg)"
+        case .unsafeGoalFile(let path): return "goalFile '\(path)' escapes the project root"
         }
     }
 }
@@ -91,7 +93,8 @@ public struct YAMLStore: @unchecked Sendable {
     public func createProject(
         at projectRoot: URL,
         name: String? = nil,
-        seedTemplate: Bool = true
+        seedTemplate: Bool = true,
+        goalFile: String? = "GOAL.md"
     ) throws -> GraphicalProject {
         var isDir: ObjCBool = false
         guard fileManager.fileExists(atPath: projectRoot.path, isDirectory: &isDir), isDir.boolValue else {
@@ -106,7 +109,7 @@ public struct YAMLStore: @unchecked Sendable {
         )
 
         let projectName = name ?? projectRoot.lastPathComponent
-        let config = ProjectConfig(name: projectName, goal: "Describe the project goal.")
+        let config = ProjectConfig(name: projectName, goal: "", goalFile: goalFile)
         let org = seedTemplate ? SeedTemplate.plannerImplementerReviewer() : OrgGraph()
         let runners = seedTemplate ? SeedTemplate.defaultRunners() : RunnersConfig()
 
@@ -126,7 +129,9 @@ public struct YAMLStore: @unchecked Sendable {
         let config: ProjectConfig = try decode(from: GraphicalPaths.projectYAML(projectRoot: projectRoot))
         let org: OrgGraph = try decode(from: GraphicalPaths.orgYAML(projectRoot: projectRoot))
         let runners: RunnersConfig = try decode(from: GraphicalPaths.runnersYAML(projectRoot: projectRoot))
-        return GraphicalProject(root: projectRoot, config: config, org: org, runners: runners)
+        // Heal argv shredded by older Agents "one per line" Apply on bash -lc scripts.
+        let repaired = RunnerArgsEditing.repairingShreddedShellScripts(runners)
+        return GraphicalProject(root: projectRoot, config: config, org: org, runners: repaired)
     }
 
     public func save(_ project: GraphicalProject) throws {
@@ -174,10 +179,43 @@ public struct YAMLStore: @unchecked Sendable {
 
     private func ensureGoalFile(projectRoot: URL, config: ProjectConfig) throws {
         guard let goalFile = config.goalFile else { return }
-        let url = projectRoot.appendingPathComponent(goalFile)
+        guard let url = PathSafety.resolveContained(base: projectRoot, relative: goalFile) else {
+            throw YAMLStoreError.unsafeGoalFile(goalFile)
+        }
         if !fileManager.fileExists(atPath: url.path) {
-            let body = "# Goal\n\n\(config.goal)\n"
-            try body.write(to: url, atomically: true, encoding: .utf8)
+            try "".write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    /// Reads `config.goalFile` (plans/014), trimmed. Returns `nil` when there is no
+    /// `goalFile` configured or the file does not exist yet — callers should fall
+    /// back to `config.goal` in that case. Throws `unsafeGoalFile` if the configured
+    /// path would escape `projectRoot` (see `PathSafety`).
+    public func loadGoalText(projectRoot: URL, config: ProjectConfig) throws -> String? {
+        guard let goalFile = config.goalFile else { return nil }
+        guard let url = PathSafety.resolveContained(base: projectRoot, relative: goalFile) else {
+            throw YAMLStoreError.unsafeGoalFile(goalFile)
+        }
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            throw YAMLStoreError.ioFailed(error.localizedDescription)
+        }
+    }
+
+    /// Writes `text` to `config.goalFile` (plans/014), creating the file if needed.
+    /// No-op if `goalFile` is unset. Throws `unsafeGoalFile` on path escape.
+    public func writeGoalText(_ text: String, projectRoot: URL, config: ProjectConfig) throws {
+        guard let goalFile = config.goalFile else { return }
+        guard let url = PathSafety.resolveContained(base: projectRoot, relative: goalFile) else {
+            throw YAMLStoreError.unsafeGoalFile(goalFile)
+        }
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            throw YAMLStoreError.ioFailed(error.localizedDescription)
         }
     }
 
