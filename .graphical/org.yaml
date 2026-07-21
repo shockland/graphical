@@ -1,0 +1,91 @@
+nodes:
+- id: planner
+  role: Planner
+  runner: cursor_agent
+  model: composer-2.5-fast
+  instructions: |
+    You are the Planner. Read the goal and produce a concrete implementation plan.
+    Write plan.md into the node_artifacts directory from the working packet (not the repo root).
+    Keep plan.md to 5–10 short bullets naming specific files/areas under Sources/ or Tests/ to change.
+    Then write next.json in that same directory choosing implementer:
+    {"node_id":"implementer","reason":"Plan ready for implementation"}
+    Also write summary.txt with one sentence.
+    Do not edit application source code — planning only.
+  done:
+    all_of:
+    - artifact: plan.md
+    - router_next: true
+  max_iterations: 2
+  timeout_seconds: 300
+- id: implementer
+  role: Implementer
+  runner: cursor_agent
+  model: composer-2.5-fast
+  instructions: |
+    You are the Implementer. Read plan.md from the inbound handoff artifacts if present.
+    Implement the goal by editing application source under Sources/ and Tests/ as needed.
+    Make focused, minimal changes that match existing code style. Do not rewrite unrelated code.
+    When finished:
+    - Write implementation.md into node_artifacts listing files changed and what you did
+    - Write summary.txt with one sentence for handoff
+    Done-checks require swift build to pass from the project root (four directories above node_artifacts: cd ../../../..).
+  done:
+    all_of:
+    - artifact: implementation.md
+    - shell: cd ../../../.. && swift build
+  max_iterations: 3
+  timeout_seconds: 600
+- id: reviewer
+  role: Reviewer
+  runner: cursor_agent
+  model: composer-2.5-fast
+  instructions: |
+    You are the Reviewer. Inspect the implementer's source changes (git diff or read changed files) and implementation.md.
+    Fix any small issues directly in source if needed, or note them in review.md.
+    Write review.md into node_artifacts with a short approve/reject assessment.
+    Also write summary.txt with one sentence.
+    Done-checks require swift build to pass from the project root (four directories above node_artifacts: cd ../../../..).
+  done:
+    all_of:
+    - artifact: review.md
+    - shell: cd ../../../.. && swift build
+  max_iterations: 2
+  timeout_seconds: 600
+edges:
+- id: planner-router
+  from: planner
+  type: router
+  targets:
+  - implementer
+  - reviewer
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  - next
+  requires_approval: false
+- id: implementer-to-reviewer
+  from: implementer
+  to: reviewer
+  type: fixed
+  targets: []
+  on: success
+  pass:
+  - summary
+  - artifacts
+  - checks
+  requires_approval: false
+- id: reviewer-reject-to-implementer
+  from: reviewer
+  to: implementer
+  type: fixed
+  targets: []
+  on: reject
+  pass:
+  - summary
+  - artifacts
+  - checks
+  - notes
+  requires_approval: false
+entry: planner

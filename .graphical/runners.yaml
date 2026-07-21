@@ -1,0 +1,41 @@
+runners:
+  echo_fixture:
+    command: /bin/bash
+    args:
+    - -lc
+    - "set -euo pipefail\nPACKET=\"{{prompt_file}}\"\nOUT=\"{{node_artifacts}}\"\nmkdir
+      -p \"$OUT\"\nROLE=$(basename \"$OUT\")\ncase \"$ROLE\" in\n  planner)\n    echo
+      \"# Plan\" > \"$OUT/plan.md\"\n    echo \"Implement the goal in small steps.\"
+      >> \"$OUT/plan.md\"\n    printf '%s\\n' '{\"node_id\":\"implementer\",\"reason\":\"Plan
+      ready for implementation\"}' > \"$OUT/next.json\"\n    ;;\n  implementer)\n
+      \   echo \"# Implementation\" > \"$OUT/implementation.md\"\n    echo \"Done.\"
+      >> \"$OUT/implementation.md\"\n    ;;\n  reviewer)\n    echo \"# Review\" >
+      \"$OUT/review.md\"\n    echo \"Approved.\" >> \"$OUT/review.md\"\n    ;;\n  *)\n
+      \   echo \"# Output\" > \"$OUT/output.md\"\n    ;;\nesac\necho \"Fixture runner
+      completed for $ROLE (packet: $PACKET)\""
+    cwd: "{{project_root}}"
+    env: {}
+    kind: custom
+  cursor_agent:
+    command: /bin/bash
+    args:
+    - -lc
+    - |
+      set -euo pipefail
+      export PATH="$HOME/.local/bin:$PATH"
+      agent -p --trust --force --workspace "{{project_root}}" --model "{{model}}" "$(cat "{{prompt_file}}")"
+    cwd: "{{project_root}}"
+    env: {}
+    kind: cursor_agent
+    default_model: composer-2.5-fast
+  claude_code:
+    command: claude
+    args:
+    - -p
+    - "{{prompt_file}}"
+    - --model
+    - "{{model}}"
+    cwd: "{{project_root}}"
+    env: {}
+    kind: claude_code
+    default_model: sonnet
